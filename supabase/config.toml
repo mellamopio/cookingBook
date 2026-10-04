@@ -3,3 +3,6 @@ verify_jwt = true
 
 [functions.share-recipe]
 verify_jwt = false
+
+[functions.friend-cookbook]
+verify_jwt = true

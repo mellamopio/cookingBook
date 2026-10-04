@@ -96,6 +96,17 @@ button:disabled { cursor: not-allowed; opacity: .68; }
 .nav-item svg { color: #bdc9b8; }
 .nav-count { color: #aebaa9; font-size: 11px; }
 .category-dot { flex: 0 0 auto; width: 6px; height: 6px; margin: 0 5px; border-radius: 50%; background: #a5b394; }
+.friends-label { margin-top: 25px; }
+.friend-nav-row { display: flex; min-width: 0; align-items: center; gap: 3px; padding-right: 5px; border-radius: 6px; }
+.friend-nav-row:hover { background: rgba(255,255,255,.07); }
+.friend-nav-item { display: flex; min-width: 0; min-height: 36px; flex: 1; align-items: center; gap: 9px; padding: 0 7px; border: 0; background: transparent; color: #c3cbc0; text-align: left; font-size: 10px; cursor: pointer; }
+.friend-nav-item > span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.friend-avatar { display: grid; width: 22px; height: 22px; flex: 0 0 auto; place-items: center; border-radius: 50%; background: #75846b; color: #fff; font-size: 9px; }
+.friend-remove, .friend-request-row button { display: grid; width: 23px; height: 24px; flex: 0 0 auto; place-items: center; border: 0; border-radius: 4px; background: transparent; color: #aeb9aa; cursor: pointer; }
+.friend-remove:hover, .friend-request-row button:hover { background: rgba(255,255,255,.12); color: #fff; }
+.friend-request-row { display: flex; min-width: 0; align-items: center; gap: 2px; padding: 3px 4px 3px 9px; color: #c3cbc0; }
+.friend-request-email { flex: 1; overflow: hidden; font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+.friend-request-row button:first-of-type { color: #c6d3b9; }
 .sidebar-bottom { margin-top: auto; }
 .sidebar-tip { display: flex; gap: 10px; padding: 14px 10px 18px; border-top: 1px solid rgba(255,255,255,.13); color: #b6c4a9; }
 .sidebar-tip p { margin: 0; color: #c1cbb9; font-size: 10px; line-height: 1.7; }
@@ -302,6 +313,33 @@ button.tag-chip:hover { border-color: #aab7a0; background: #e9ede2; }
 .shared-footer a, .shared-error a { color: #536c4e; font-weight: 600; }
 .shared-error { width: min(100%, 520px); margin: auto; padding: 30px; border: 1px solid #e9e6dc; background: #fbfaf7; color: #777a71; font-size: 12px; line-height: 1.7; }
 .shared-error h1 { margin-top: 0; color: #30362f; font-family: var(--serif); font-size: 30px; font-weight: 500; }
+.friend-modal { position: relative; display: flex; width: min(100%, 680px); max-height: calc(100vh - 40px); flex-direction: column; padding: 34px 36px 30px; overflow: hidden; border: 1px solid #eeece4; border-radius: 4px; background: #fbfaf6; box-shadow: 0 24px 80px #1820162e; animation: modal-in .2s ease-out; }
+.friend-modal h2 { margin: 8px 0 6px; font-family: var(--serif); font-size: 30px; font-weight: 500; }
+.friend-search { display: flex; align-items: flex-end; gap: 12px; margin-top: 15px; }
+.friend-search .field-label { flex: 1; margin: 0; }
+.friend-search .primary-button { flex: 0 0 auto; }
+.friend-modal > .form-message { flex: 0 0 auto; margin-top: 12px; }
+.friend-results { min-height: 0; margin-top: 18px; overflow: auto; border-top: 1px solid var(--line); }
+.friend-results-heading { position: sticky; top: 0; z-index: 1; display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 12px 3px; background: #fbfaf6; color: #52594d; font-size: 10px; }
+.friend-results-heading > span { color: #92948b; font-size: 9px; }
+.friend-recipe { padding: 10px 0; border-top: 1px solid #ecebe4; }
+.friend-recipe-summary { display: flex; width: 100%; align-items: center; gap: 11px; padding: 0; border: 0; background: transparent; text-align: left; cursor: pointer; }
+.friend-recipe-summary > img, .friend-recipe-placeholder { display: grid; width: 58px; height: 48px; flex: 0 0 auto; place-items: center; border-radius: 3px; background: #e8e5dc; color: #75866c; object-fit: cover; }
+.friend-recipe-copy { display: flex; min-width: 0; flex: 1; flex-direction: column; gap: 4px; }
+.friend-recipe-copy strong { overflow: hidden; color: #30362f; font-family: var(--serif); font-size: 15px; font-weight: 500; text-overflow: ellipsis; white-space: nowrap; }
+.friend-recipe-copy > span:not(.friend-rating) { color: #85877f; font-size: 9px; }
+.friend-rating { color: #b47a35; font-size: 11px; letter-spacing: 1px; }
+.friend-expand { color: #63745c; font-size: 9px; }
+.friend-recipe-detail { margin: 11px 0 9px 69px; color: #62675e; font-size: 10px; line-height: 1.6; }
+.friend-recipe-detail > p { margin: 5px 0; }
+.friend-recipe-detail h3 { margin: 11px 0 4px; color: #41483d; font-family: var(--serif); font-size: 14px; font-weight: 500; }
+.friend-recipe-detail ul, .friend-recipe-detail ol { margin: 4px 0; padding-left: 18px; }
+.friend-recipe-detail li { margin: 3px 0; }
+.friend-recipe-detail .recipe-tags { max-height: none; margin-top: 7px; }
+.friend-copy-button { margin: 9px 0 0 69px; }
+.friend-empty { margin-top: 20px; padding: 20px; background: #f2f1eb; color: #777a71; font-size: 11px; text-align: center; }
+.friend-request-action { margin-top: 12px; }
+.friend-status { display: inline-flex; align-items: center; gap: 6px; min-height: 35px; color: #65745c; font-size: 10px; line-height: 1.5; }
 
 @media (min-width: 1500px) {
   .main-content { padding-right: 8%; padding-left: 8%; }
@@ -322,6 +360,10 @@ button.tag-chip:hover { border-color: #aab7a0; background: #e9ede2; }
   .side-nav::-webkit-scrollbar { display: none; }
   .nav-item { flex: 0 0 auto; width: auto; min-height: 31px; padding: 0 9px; white-space: nowrap; }
   .nav-item > span:nth-child(2) { flex: 0 0 auto; }
+  .friend-nav-row { flex: 0 0 auto; }
+  .friend-nav-item { min-height: 31px; padding: 0 7px; }
+  .friend-avatar { width: 19px; height: 19px; }
+  .friend-request-row { flex: 0 0 auto; max-width: 200px; }
   .nav-count { display: none; }
   .nav-item svg { width: 15px; }
   .main-content { margin-left: 0; padding: 0 20px 23px; }
@@ -382,6 +424,10 @@ button.tag-chip:hover { border-color: #aab7a0; background: #e9ede2; }
   .shared-page { padding: 18px 12px; }
   .shared-recipe .detail-content { padding: 22px 20px 26px; }
   .shared-title { font-size: 27px; }
+  .friend-modal { max-height: calc(100vh - 24px); padding: 30px 20px 22px; }
+  .friend-search { align-items: stretch; flex-direction: column; gap: 8px; }
+  .friend-search .primary-button { width: 100%; }
+  .friend-recipe-detail, .friend-copy-button { margin-left: 0; }
   .setup-card { padding: 34px 25px; }
   .setup-card h1 { font-size: 28px; }
 }

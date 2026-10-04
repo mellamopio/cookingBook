@@ -189,39 +189,49 @@ function validRecipe(value: unknown): ExtractedRecipe {
   }
 }
 
-async function extractWithOpenAI(content: { text?: string; imageDataUrl?: string }): Promise<ExtractedRecipe> {
-  const apiKey = Deno.env.get('OPENAI_API_KEY')
-  if (!apiKey) throw new Error('Recipe extraction is not configured yet. Add the OPENAI_API_KEY secret to your Supabase project.')
+type GeminiPart = { text: string } | { inline_data: { mime_type: string; data: string } }
 
-  const prompt = `Extract one recipe from the provided ${content.imageDataUrl ? 'photo' : 'webpage text'}. Return a JSON object with exactly these fields: title (string), description (string), category (short string such as Breakfast, Lunch, Dinner, Dessert, or Other), ingredients (array of strings), steps (array of strings), prep_time_minutes (number or null), cook_time_minutes (number or null), servings (number or null). Preserve the language used by the source; do not translate. Do not invent missing ingredients, instructions, times, or servings. For a photo, transcribe only what is legible. If no recipe is present, use an empty title.`
-  const userContent = content.imageDataUrl
-    ? [
-        { type: 'text', text: prompt },
-        { type: 'image_url', image_url: { url: content.imageDataUrl, detail: 'high' } },
-      ]
-    : `${prompt}\n\nWebpage text:\n${content.text ?? ''}`
+async function generateGeminiJson(prompt: string, parts: GeminiPart[]): Promise<unknown> {
+  const apiKey = Deno.env.get('GEMINI_API_KEY')
+  if (!apiKey) throw new Error('Recipe AI is not configured yet. Add the GEMINI_API_KEY secret to your Supabase project.')
 
-  const response = await fetch('https://api.openai.com/v1/chat/completions', {
+  const response = await fetch('https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent', {
     method: 'POST',
-    headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey },
     body: JSON.stringify({
-      model: 'gpt-4o-mini',
-      response_format: { type: 'json_object' },
-      messages: [
-        { role: 'system', content: 'You extract recipe details faithfully and return valid JSON only.' },
-        { role: 'user', content: userContent },
-      ],
-      max_tokens: 2500,
+      contents: [{ role: 'user', parts: [{ text: prompt }, ...parts] }],
+      generationConfig: { responseMimeType: 'application/json', maxOutputTokens: 4096 },
     }),
   })
   if (!response.ok) {
     const details = await response.text()
-    throw new Error(`OpenAI extraction failed (${response.status}): ${details.slice(0, 300)}`)
+    throw new Error(`Google Gemini request failed (${response.status}): ${details.slice(0, 500)}`)
   }
   const result = await response.json()
-  const message = result.choices?.[0]?.message?.content
-  if (typeof message !== 'string') throw new Error('The extraction service did not return a recipe.')
-  return validRecipe(JSON.parse(message))
+  const text = result.candidates?.[0]?.content?.parts
+    ?.map((part: { text?: unknown }) => typeof part.text === 'string' ? part.text : '')
+    .join('')
+  if (typeof text !== 'string' || !text.trim()) {
+    throw new Error('Google Gemini did not return recipe text. Try a clearer photo or another recipe source.')
+  }
+  try {
+    return JSON.parse(text)
+  } catch {
+    throw new Error('Google Gemini returned invalid recipe data. Please try again.')
+  }
+}
+
+async function extractWithGemini(content: { text?: string; imageDataUrl?: string }): Promise<ExtractedRecipe> {
+  const prompt = `Extract one recipe from the provided ${content.imageDataUrl ? 'photo' : 'webpage text'}. Return JSON with exactly these fields: title (string), description (string), category (short string such as Breakfast, Lunch, Dinner, Dessert, or Other), ingredients (array of strings), steps (array of strings), prep_time_minutes (number or null), cook_time_minutes (number or null), servings (number or null). Preserve the language used by the source; do not translate. Do not invent missing ingredients, instructions, times, or servings. For a photo, transcribe only what is legible. If no recipe is present, use an empty title.`
+  const parts: GeminiPart[] = []
+  if (content.imageDataUrl) {
+    const match = content.imageDataUrl.match(/^data:(image\/(?:jpeg|png|webp|gif));base64,(.+)$/)
+    if (!match) throw new Error('Choose a supported recipe photo.')
+    parts.push({ inline_data: { mime_type: match[1], data: match[2] } })
+  } else {
+    parts.push({ text: `Webpage text:\n${content.text ?? ''}` })
+  }
+  return validRecipe(await generateGeminiJson(prompt, parts))
 }
 
 function validTranslation(value: unknown, source: TranslatableRecipe): RecipeTranslation {
@@ -250,31 +260,8 @@ function validTranslation(value: unknown, source: TranslatableRecipe): RecipeTra
 }
 
 async function translateRecipe(source: TranslatableRecipe, language: 'English' | 'German' | 'Spanish'): Promise<RecipeTranslation> {
-  const apiKey = Deno.env.get('OPENAI_API_KEY')
-  if (!apiKey) throw new Error('Recipe translation is not configured yet. Add the OPENAI_API_KEY secret to your Supabase project.')
-
-  const prompt = `Translate this recipe text into ${language}. Preserve quantities, units, cooking terms, and meaning exactly; do not add or remove content. Return JSON with exactly five fields: title (string), description (string), category (string), ingredients (array of strings), and steps (array of strings). Keep the ingredient and step array lengths and order unchanged. Translate even entries that are already in another language.`
-  const response = await fetch('https://api.openai.com/v1/chat/completions', {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      model: 'gpt-4o-mini',
-      response_format: { type: 'json_object' },
-      messages: [
-        { role: 'system', content: 'You translate recipe text accurately and return valid JSON only.' },
-        { role: 'user', content: `${prompt}\n\nRecipe JSON:\n${JSON.stringify(source)}` },
-      ],
-      max_tokens: 2500,
-    }),
-  })
-  if (!response.ok) {
-    const details = await response.text()
-    throw new Error(`Recipe translation failed (${response.status}): ${details.slice(0, 300)}`)
-  }
-  const result = await response.json()
-  const message = result.choices?.[0]?.message?.content
-  if (typeof message !== 'string') throw new Error('The translation service did not return recipe text.')
-  return validTranslation(JSON.parse(message), source)
+  const prompt = `Translate this recipe text into ${language}. Preserve quantities, units, cooking terms, and meaning exactly; do not add or remove content. Return JSON with exactly five fields: title (string), description (string), category (string), ingredients (array of strings), and steps (array of strings). Keep the ingredient and step array lengths and order unchanged. Translate even entries that are already in another language.\n\nRecipe JSON:\n${JSON.stringify(source)}`
+  return validTranslation(await generateGeminiJson(prompt, []), source)
 }
 
 Deno.serve(async (request) => {
@@ -349,7 +336,7 @@ Deno.serve(async (request) => {
       if (structured?.title && structured.ingredients.length && structured.steps.length) {
         return jsonResponse({ recipe: validRecipe(structured) })
       }
-      const recipe = await extractWithOpenAI({ text: pageText(html) })
+      const recipe = await extractWithGemini({ text: pageText(html) })
       return jsonResponse({ recipe })
     }
 
@@ -357,7 +344,7 @@ Deno.serve(async (request) => {
       if (!/^data:image\/(jpeg|png|webp|gif);base64,/.test(body.imageDataUrl) || body.imageDataUrl.length > 11_500_000) {
         return jsonResponse({ error: 'Choose a supported image smaller than 8 MB.' }, 400)
       }
-      return jsonResponse({ recipe: await extractWithOpenAI({ imageDataUrl: body.imageDataUrl }) })
+      return jsonResponse({ recipe: await extractWithGemini({ imageDataUrl: body.imageDataUrl }) })
     }
     return jsonResponse({ error: 'Provide a recipe-page URL or an image.' }, 400)
   } catch (error) {

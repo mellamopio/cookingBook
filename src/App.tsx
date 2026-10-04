@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import type { FormEvent, ChangeEvent } from 'react'
 import {
   ArrowDownToLine,
@@ -19,6 +19,7 @@ import {
   Sparkles,
   Star,
   Utensils,
+  Users,
   X,
 } from 'lucide-react'
 import type { User } from '@supabase/supabase-js'
@@ -40,6 +41,17 @@ type RecipeTranslation = {
   steps: string[]
 }
 
+type CookbookFriend = {
+  id: string
+  email: string
+}
+
+type FriendRequest = {
+  id: string
+  email: string
+  requesterId: string
+}
+
 const categories = ['Breakfast', 'Lunch', 'Dinner', 'Dessert', 'Snack']
 const createCategoryOption = '__create_category__'
 
@@ -51,6 +63,21 @@ function parseTags(value: string): string[] {
     seen.add(normalized)
     return true
   })
+}
+
+async function functionErrorMessage(error: { message: string; context?: unknown }): Promise<string> {
+  if (error.context instanceof Response) {
+    try {
+      const body: unknown = await error.context.clone().json()
+      if (body && typeof body === 'object' && 'error' in body && typeof body.error === 'string') {
+        return body.error
+      }
+    } catch {
+      return `HTTP ${error.context.status}: ${error.message}`
+    }
+    return `HTTP ${error.context.status}: ${error.message}`
+  }
+  return error.message
 }
 
 async function compressImageForExtraction(file: File): Promise<string> {
@@ -87,10 +114,14 @@ function App() {
   const [user, setUser] = useState<User | null>(null)
   const [sessionLoading, setSessionLoading] = useState(true)
   const [recipes, setRecipes] = useState<Recipe[]>([])
+  const [friends, setFriends] = useState<CookbookFriend[]>([])
+  const [friendRequests, setFriendRequests] = useState<FriendRequest[]>([])
   const [recipesLoading, setRecipesLoading] = useState(false)
   const [activeCategory, setActiveCategory] = useState('All recipes')
   const [query, setQuery] = useState('')
   const [isAddOpen, setIsAddOpen] = useState(false)
+  const [isFriendsOpen, setIsFriendsOpen] = useState(false)
+  const [friendCookbookEmail, setFriendCookbookEmail] = useState('')
   const [selectedRecipe, setSelectedRecipe] = useState<Recipe | null>(null)
   const [editingRecipe, setEditingRecipe] = useState<Recipe | null>(null)
   const [notice, setNotice] = useState('')
@@ -114,14 +145,36 @@ function App() {
 
   useEffect(() => {
     setRecipes([])
+    setFriends([])
+    setFriendRequests([])
     setActiveCategory('All recipes')
     setSelectedRecipe(null)
     if (user) {
       void loadRecipes()
+      void loadFriends()
     } else {
       setRecipesLoading(false)
     }
   }, [user])
+
+  async function loadFriends() {
+    if (!supabase || !user) return
+    const { data, error } = await supabase.functions.invoke('friend-cookbook', {
+      body: { action: 'list_friends' },
+    })
+    if (error) {
+      setLoadError(`Could not load your friends: ${await functionErrorMessage(error)}`)
+      return
+    }
+    if (!data || !Array.isArray(data.friends) || !Array.isArray(data.requests) || !data.friends.every((friend: unknown) =>
+      friend && typeof friend === 'object' && 'id' in friend && typeof friend.id === 'string' && 'email' in friend && typeof friend.email === 'string',
+    )) {
+      setLoadError('Could not load your friends: the server returned an invalid response.')
+      return
+    }
+    setFriends(data.friends as CookbookFriend[])
+    setFriendRequests(data.requests as FriendRequest[])
+  }
 
   async function loadRecipes() {
     if (!supabase || !user) return
@@ -170,6 +223,37 @@ function App() {
       : current)
   }
 
+  async function removeFriend(friend: CookbookFriend) {
+    if (!supabase) return
+    const { error } = await supabase.functions.invoke('friend-cookbook', {
+      body: { action: 'remove_friend', friendId: friend.id },
+    })
+    if (error) {
+      setNotice(`Could not remove friend: ${await functionErrorMessage(error)}`)
+      return
+    }
+    setFriends((current) => current.filter((item) => item.id !== friend.id))
+    setNotice(`${friend.email} was removed from your friends.`)
+  }
+
+  async function respondToFriendRequest(request: FriendRequest, accept: boolean) {
+    if (!supabase) return
+    const { error } = await supabase.functions.invoke('friend-cookbook', {
+      body: { action: accept ? 'accept_friend' : 'decline_friend', requesterId: request.requesterId },
+    })
+    if (error) {
+      setNotice(`Could not ${accept ? 'accept' : 'decline'} friend request: ${await functionErrorMessage(error)}`)
+      return
+    }
+    setFriendRequests((current) => current.filter((item) => item.requesterId !== request.requesterId))
+    if (accept) {
+      setFriends((current) => current.some((item) => item.id === request.id) ? current : [...current, { id: request.id, email: request.email }])
+      setNotice(`You and ${request.email} are now friends.`)
+    } else {
+      setNotice(`Friend request from ${request.email} declined.`)
+    }
+  }
+
   async function signOut() {
     if (!supabase) return
     const { error } = await supabase.auth.signOut()
@@ -210,6 +294,17 @@ function App() {
           <button className={`nav-item ${activeCategory === 'All recipes' ? 'active' : ''}`} onClick={() => setActiveCategory('All recipes')}>
             <BookOpen size={17} /> <span>All recipes</span><span className="nav-count">{recipes.length}</span>
           </button>
+          <button className={`nav-item ${isFriendsOpen ? 'active' : ''}`} onClick={() => setIsFriendsOpen(true)}>
+            <Users size={17} /> <span>Find a cookbook</span>
+          </button>
+          {friendRequests.length > 0 && <span className="nav-label friends-label">FRIEND REQUESTS</span>}
+          {friendRequests.map((request) => (
+            <div className="friend-request-row" key={request.requesterId}>
+              <span className="friend-request-email" title={request.email}>{request.email}</span>
+              <button aria-label={`Accept friend request from ${request.email}`} title="Accept" onClick={() => void respondToFriendRequest(request, true)}><Check size={13} /></button>
+              <button aria-label={`Decline friend request from ${request.email}`} title="Decline" onClick={() => void respondToFriendRequest(request, false)}><X size={13} /></button>
+            </div>
+          ))}
           <span className="nav-label category-label">CATEGORIES</span>
           {availableCategories.map((category) => (
             <button
@@ -219,6 +314,30 @@ function App() {
             >
               <span className="category-dot" /> <span>{category}</span>
             </button>
+          ))}
+          <span className="nav-label friends-label">FRIENDS</span>
+          {friends.map((friend) => (
+            <div className="friend-nav-row" key={friend.id}>
+              <button
+                className="friend-nav-item"
+                title={`View ${friend.email}’s cookbook`}
+                onClick={() => {
+                  setFriendCookbookEmail(friend.email)
+                  setIsFriendsOpen(true)
+                }}
+              >
+                <span className="friend-avatar">{friend.email[0].toUpperCase()}</span>
+                <span>{friend.email}</span>
+              </button>
+              <button
+                className="friend-remove"
+                aria-label={`Remove ${friend.email} from friends`}
+                title="Remove friend"
+                onClick={() => void removeFriend(friend)}
+              >
+                <X size={13} />
+              </button>
+            </div>
           ))}
         </nav>
         <div className="sidebar-bottom">
@@ -292,6 +411,19 @@ function App() {
       </main>
 
       {isAddOpen && <AddRecipeModal user={user} categoryOptions={availableCategories} onClose={() => setIsAddOpen(false)} onSaved={(message) => { void loadRecipes(); if (message) setNotice(message) }} />}
+      {isFriendsOpen && <FriendCookbookModal
+        initialEmail={friendCookbookEmail}
+        onClose={() => { setIsFriendsOpen(false); setFriendCookbookEmail('') }}
+        onFriendAdded={(friend) => {
+          setFriends((current) => current.some((item) => item.id === friend.id) ? current : [...current, friend])
+          setFriendRequests((current) => current.filter((item) => item.id !== friend.id))
+        }}
+        onFriendRequestReceived={() => void loadFriends()}
+        onAdded={(title) => {
+          void loadRecipes()
+          setNotice(`“${title}” was added to your cookbook.`)
+        }}
+      />}
       {editingRecipe && (
         <AddRecipeModal
           user={user}
@@ -354,7 +486,11 @@ function AuthScreen() {
     setBusy(true)
     setMessage('')
     const result = isSignUp
-      ? await supabase.auth.signUp({ email, password })
+      ? await supabase.auth.signUp({
+        email,
+        password,
+        options: { emailRedirectTo: window.location.origin },
+      })
       : await supabase.auth.signInWithPassword({ email, password })
     setBusy(false)
     if (result.error) {
@@ -746,19 +882,7 @@ function RecipeDetail({ recipe, ownerId, onClose, onRate, onEdit, onTagClick }: 
     setTranslationLoading(false)
     if (error) {
       setLanguage('original')
-      let message = error.message
-      if (error.context instanceof Response) {
-        try {
-          const body: unknown = await error.context.clone().json()
-          if (body && typeof body === 'object' && 'error' in body && typeof body.error === 'string') {
-            message = body.error
-          } else {
-            message = `HTTP ${error.context.status}: ${error.message}`
-          }
-        } catch {
-          message = `HTTP ${error.context.status}: ${error.message}`
-        }
-      }
+      const message = await functionErrorMessage(error)
       setTranslationError(`Could not translate this recipe: ${message}`)
       return
     }
@@ -993,6 +1117,195 @@ function SharedRecipePage({ token }: { token: string }) {
             </div>
           </article>}
     </main>
+  )
+}
+
+function FriendCookbookModal({ initialEmail, onClose, onAdded, onFriendAdded, onFriendRequestReceived }: {
+  initialEmail: string
+  onClose: () => void
+  onAdded: (title: string) => void
+  onFriendAdded: (friend: CookbookFriend) => void
+  onFriendRequestReceived: () => void
+}) {
+  const [email, setEmail] = useState('')
+  const [ownerEmail, setOwnerEmail] = useState('')
+  const [ownerId, setOwnerId] = useState('')
+  const [recipes, setRecipes] = useState<Recipe[]>([])
+  const [friendRequestStatus, setFriendRequestStatus] = useState<'none' | 'request_sent' | 'request_received' | 'accepted'>('none')
+  const [searched, setSearched] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const [friendBusy, setFriendBusy] = useState(false)
+  const [copyingId, setCopyingId] = useState<string | null>(null)
+  const [copiedIds, setCopiedIds] = useState<Set<string>>(new Set())
+  const [expandedId, setExpandedId] = useState<string | null>(null)
+  const [error, setError] = useState('')
+
+  const loadCookbook = useCallback(async (searchEmail: string) => {
+    if (!supabase) return
+    setBusy(true)
+    setError('')
+    setRecipes([])
+    setOwnerEmail('')
+    setOwnerId('')
+    setFriendRequestStatus('none')
+    setSearched(false)
+    const { data, error: searchError } = await supabase.functions.invoke('friend-cookbook', {
+      body: { action: 'search', email: searchEmail },
+    })
+    if (searchError) {
+      setError(await functionErrorMessage(searchError))
+      setBusy(false)
+      return
+    }
+    if (
+      !data ||
+      !Array.isArray(data.recipes) ||
+      typeof data.email !== 'string' ||
+      typeof data.friendId !== 'string' ||
+      (data.relationshipStatus !== 'none' && data.relationshipStatus !== 'request_sent' && data.relationshipStatus !== 'request_received' && data.relationshipStatus !== 'accepted')
+    ) {
+      setError('The cookbook lookup returned an invalid response.')
+      setBusy(false)
+      return
+    }
+    setOwnerEmail(data.email)
+    setOwnerId(data.friendId)
+    setRecipes(data.recipes as Recipe[])
+    setFriendRequestStatus(data.relationshipStatus)
+    setSearched(true)
+    setBusy(false)
+  }, [])
+
+  useEffect(() => {
+    if (initialEmail) {
+      setEmail(initialEmail)
+      void loadCookbook(initialEmail)
+    }
+  }, [initialEmail, loadCookbook])
+
+  async function searchCookbook(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    await loadCookbook(email.trim())
+  }
+
+  async function sendFriendRequest() {
+    if (!supabase || !ownerEmail || friendBusy || friendRequestStatus === 'accepted') return
+    setFriendBusy(true)
+    setError('')
+    const { data, error: requestError } = await supabase.functions.invoke('friend-cookbook', {
+      body: { action: 'add_friend', email: ownerEmail },
+    })
+    setFriendBusy(false)
+    if (requestError) {
+      setError(await functionErrorMessage(requestError))
+      return
+    }
+    const status = data?.status
+    if (status !== 'request_sent' && status !== 'request_received' && status !== 'accepted') {
+      setError('The friend request returned an invalid response.')
+      return
+    }
+    setFriendRequestStatus(status)
+    if (status === 'accepted') {
+      const friend = data?.friend
+      if (friend && typeof friend.id === 'string' && typeof friend.email === 'string') onFriendAdded(friend)
+    } else if (status === 'request_received') {
+      onFriendRequestReceived()
+    }
+  }
+
+  async function addRecipe(recipe: Recipe) {
+    if (!supabase) return
+    setCopyingId(recipe.id)
+    setError('')
+    const { data, error: copyError } = await supabase.functions.invoke('friend-cookbook', {
+      body: { action: 'copy', email: ownerEmail, recipeId: recipe.id },
+    })
+    setCopyingId(null)
+    if (copyError) {
+      setError(await functionErrorMessage(copyError))
+      return
+    }
+    const copiedTitle = data?.recipe?.title
+    if (typeof copiedTitle !== 'string') {
+      setError('The recipe was copied, but the response was incomplete. Refresh your cookbook to check.')
+      return
+    }
+    setCopiedIds((current) => new Set(current).add(recipe.id))
+    onAdded(copiedTitle)
+  }
+
+  return (
+    <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget && !busy && !copyingId) onClose() }}>
+      <section className="friend-modal" role="dialog" aria-modal="true" aria-labelledby="friend-title">
+        <button className="modal-close" onClick={onClose} aria-label="Close"><X size={19} /></button>
+        <span className="eyebrow">COOK TOGETHER</span>
+        <h2 id="friend-title">Find a cookbook.</h2>
+        <p className="modal-lede">Search with the exact email address they used to sign up. You can browse and copy their recipes after they accept your friend request.</p>
+        <form className="friend-search" onSubmit={(event) => void searchCookbook(event)}>
+          <label className="field-label">Friend’s email<input type="email" required autoComplete="off" value={email} onChange={(event) => setEmail(event.target.value)} placeholder="friend@example.com" /></label>
+          <button className="primary-button" disabled={busy}>{busy ? <LoaderCircle size={16} className="spin" /> : <Search size={16} />}{busy ? 'Searching…' : 'Find cookbook'}</button>
+        </form>
+        {error && <div className="form-message" role="alert">{error}</div>}
+        {searched && ownerId && <div className="friend-request-action">
+          {friendRequestStatus === 'accepted'
+            ? <span className="friend-status"><Check size={14} /> Friends</span>
+            : friendRequestStatus === 'request_sent'
+              ? <span className="friend-status">Friend request sent — waiting for confirmation</span>
+              : friendRequestStatus === 'request_received'
+                ? <span className="friend-status">They sent you a friend request. Accept it from the sidebar.</span>
+                : <button className="secondary-button" type="button" disabled={friendBusy} onClick={() => void sendFriendRequest()}>
+                  {friendBusy ? <LoaderCircle size={14} className="spin" /> : <Users size={14} />}
+                  {friendBusy ? 'Sending…' : 'Add friend'}
+                </button>}
+        </div>}
+        {searched && !error && recipes.length === 0 && friendRequestStatus === 'accepted' && <div className="friend-empty">This cookbook has no saved recipes yet.</div>}
+        {searched && !error && recipes.length === 0 && friendRequestStatus !== 'accepted' && <div className="friend-empty">You can browse this cookbook after you become friends.</div>}
+        {recipes.length > 0 && (
+          <div className="friend-results">
+            <div className="friend-results-heading">
+              <strong>{ownerEmail}’s cookbook</strong>
+              <span>{recipes.length} {recipes.length === 1 ? 'recipe' : 'recipes'}</span>
+            </div>
+            {recipes.map((recipe) => (
+              <article className="friend-recipe" key={recipe.id}>
+                <button className="friend-recipe-summary" type="button" onClick={() => setExpandedId((current) => current === recipe.id ? null : recipe.id)}>
+                  {recipe.imageUrl
+                    ? <img src={recipe.imageUrl} alt="" />
+                    : <span className="friend-recipe-placeholder"><Utensils size={20} /></span>}
+                  <span className="friend-recipe-copy">
+                    <strong>{recipe.title}</strong>
+                    <span>{recipe.category} · {minutesLabel(recipe.prep_time_minutes, recipe.cook_time_minutes)}</span>
+                    {recipe.rating && <span className="friend-rating" aria-label={`Rated ${recipe.rating} out of 5 stars`}>{'★'.repeat(recipe.rating)}{'☆'.repeat(5 - recipe.rating)}</span>}
+                  </span>
+                  <span className="friend-expand">{expandedId === recipe.id ? 'Hide' : 'View'}</span>
+                </button>
+                {expandedId === recipe.id && <div className="friend-recipe-detail">
+                  {recipe.description && <p>{recipe.description}</p>}
+                  {recipe.recommended_from && <p><strong>Recommended from:</strong> {recipe.recommended_from}</p>}
+                  {(recipe.tags ?? []).length > 0 && <div className="recipe-tags">{recipe.tags.map((tag) => <span className="tag-chip" key={tag}>{tag}</span>)}</div>}
+                  <h3>Ingredients</h3>
+                  <ul>{recipe.ingredients.map((ingredient, index) => <li key={`${index}-${ingredient}`}>{ingredient}</li>)}</ul>
+                  <h3>Method</h3>
+                  <ol>{recipe.steps.map((step, index) => <li key={`${index}-${step}`}>{step}</li>)}</ol>
+                </div>}
+                <button
+                  className="secondary-button friend-copy-button"
+                  type="button"
+                  disabled={copyingId === recipe.id || copiedIds.has(recipe.id)}
+                  onClick={() => void addRecipe(recipe)}
+                >
+                  {copyingId === recipe.id
+                    ? <LoaderCircle size={14} className="spin" />
+                    : copiedIds.has(recipe.id) ? <Check size={14} /> : <Plus size={14} />}
+                  {copyingId === recipe.id ? 'Adding…' : copiedIds.has(recipe.id) ? 'Added to your cookbook' : 'Add to my cookbook'}
+                </button>
+              </article>
+            ))}
+          </div>
+        )}
+      </section>
+    </div>
   )
 }
 
