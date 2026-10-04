@@ -195,12 +195,15 @@ async function generateGeminiJson(prompt: string, parts: GeminiPart[]): Promise<
   const apiKey = Deno.env.get('GEMINI_API_KEY')
   if (!apiKey) throw new Error('Recipe AI is not configured yet. Add the GEMINI_API_KEY secret to your Supabase project.')
 
+  const input = parts.length
+    ? [{ type: 'text', text: prompt }, ...parts]
+    : prompt
   const response = await fetch('https://generativelanguage.googleapis.com/v1beta/interactions', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey },
     body: JSON.stringify({
       model: 'gemini-3.8-flash',
-      input: [{ type: 'text', text: prompt }, ...parts],
+      input,
       response_format: { type: 'text', mime_type: 'application/json' },
     }),
   })
@@ -209,9 +212,29 @@ async function generateGeminiJson(prompt: string, parts: GeminiPart[]): Promise<
     throw new Error(`Google Gemini request failed (${response.status}): ${details.slice(0, 500)}`)
   }
   const result = await response.json()
-  const text = result.output_text
+  const interaction = result && typeof result === 'object' && result.interaction && typeof result.interaction === 'object'
+    ? result.interaction
+    : result
+  const output = Array.isArray(interaction.output)
+    ? interaction.output
+    : Array.isArray(interaction.steps) ? interaction.steps : []
+  const text = typeof interaction.output_text === 'string' ? interaction.output_text : output
+    .map((item: unknown) => {
+      if (!item || typeof item !== 'object') return ''
+      const block = item as { type?: unknown; text?: unknown; content?: unknown }
+      if (block.type === 'text' && typeof block.text === 'string') return block.text
+      if (!Array.isArray(block.content)) return ''
+      return block.content
+        .map((content: unknown) => {
+          if (!content || typeof content !== 'object') return ''
+          const textBlock = content as { type?: unknown; text?: unknown }
+          return textBlock.type === 'text' && typeof textBlock.text === 'string' ? textBlock.text : ''
+        })
+        .join('')
+    })
+    .join('')
   if (typeof text !== 'string' || !text.trim()) {
-    throw new Error('Google Gemini did not return recipe text. Try a clearer photo or another recipe source.')
+    throw new Error('Google Gemini returned a response without text. Please try again.')
   }
   try {
     return JSON.parse(text)
