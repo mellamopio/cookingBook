@@ -12,6 +12,8 @@ import {
   ImagePlus,
   LoaderCircle,
   LogOut,
+  Settings,
+  Camera,
   Pencil,
   Plus,
   Search,
@@ -121,7 +123,9 @@ function App() {
   const [query, setQuery] = useState('')
   const [isAddOpen, setIsAddOpen] = useState(false)
   const [isFriendsOpen, setIsFriendsOpen] = useState(false)
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false)
   const [friendCookbookEmail, setFriendCookbookEmail] = useState('')
+  const [avatarUrl, setAvatarUrl] = useState<string | null>(null)
   const [selectedRecipe, setSelectedRecipe] = useState<Recipe | null>(null)
   const [editingRecipe, setEditingRecipe] = useState<Recipe | null>(null)
   const [notice, setNotice] = useState('')
@@ -147,6 +151,7 @@ function App() {
     setRecipes([])
     setFriends([])
     setFriendRequests([])
+    setAvatarUrl(null)
     setActiveCategory('All recipes')
     setSelectedRecipe(null)
     if (user) {
@@ -155,6 +160,26 @@ function App() {
     } else {
       setRecipesLoading(false)
     }
+  }, [user])
+
+  useEffect(() => {
+    let isCurrent = true
+    async function loadAvatar() {
+      const path = user?.user_metadata?.avatar_path
+      if (!supabase || !user || typeof path !== 'string' || !path.startsWith(`${user.id}/`)) {
+        setAvatarUrl(null)
+        return
+      }
+      const { data, error } = await supabase.storage.from('profile-images').createSignedUrl(path, 3600)
+      if (!isCurrent) return
+      if (error) {
+        setLoadError(`Could not load your profile picture: ${error.message}`)
+        return
+      }
+      setAvatarUrl(data.signedUrl)
+    }
+    void loadAvatar()
+    return () => { isCurrent = false }
   }, [user])
 
   async function loadFriends() {
@@ -295,7 +320,7 @@ function App() {
             <BookOpen size={17} /> <span>All recipes</span><span className="nav-count">{recipes.length}</span>
           </button>
           <button className={`nav-item ${isFriendsOpen ? 'active' : ''}`} onClick={() => setIsFriendsOpen(true)}>
-            <Users size={17} /> <span>Find a cookbook</span>
+            <Users size={17} /> <span>Find a friend</span>
           </button>
           {friendRequests.length > 0 && <span className="nav-label friends-label">FRIEND REQUESTS</span>}
           {friendRequests.map((request) => (
@@ -345,10 +370,10 @@ function App() {
             <Sparkles size={15} />
             <p><strong>A good recipe is worth keeping.</strong><br />Save one you love today.</p>
           </div>
-          <button className="account-button" onClick={() => void signOut()}>
-            <span className="avatar">{(user.email?.[0] ?? 'Y').toUpperCase()}</span>
+          <button className="account-button" onClick={() => setIsSettingsOpen(true)}>
+            {avatarUrl ? <img className="avatar avatar-image" src={avatarUrl} alt="" /> : <span className="avatar">{(user.email?.[0] ?? 'Y').toUpperCase()}</span>}
             <span className="account-email">{user.email}</span>
-            <LogOut size={15} />
+            <Settings size={15} />
           </button>
         </div>
       </aside>
@@ -423,6 +448,13 @@ function App() {
           void loadRecipes()
           setNotice(`“${title}” was added to your cookbook.`)
         }}
+      />}
+      {isSettingsOpen && <SettingsModal
+        user={user}
+        avatarUrl={avatarUrl}
+        onAvatarChanged={setAvatarUrl}
+        onClose={() => setIsSettingsOpen(false)}
+        onSignOut={() => void signOut()}
       />}
       {editingRecipe && (
         <AddRecipeModal
@@ -1127,7 +1159,7 @@ function FriendCookbookModal({ initialEmail, onClose, onAdded, onFriendAdded, on
   onFriendAdded: (friend: CookbookFriend) => void
   onFriendRequestReceived: () => void
 }) {
-  const [email, setEmail] = useState('')
+  const [identifier, setIdentifier] = useState('')
   const [ownerEmail, setOwnerEmail] = useState('')
   const [ownerId, setOwnerId] = useState('')
   const [recipes, setRecipes] = useState<Recipe[]>([])
@@ -1149,11 +1181,19 @@ function FriendCookbookModal({ initialEmail, onClose, onAdded, onFriendAdded, on
     setOwnerId('')
     setFriendRequestStatus('none')
     setSearched(false)
+    const identifier = searchEmail.trim().replace(/^@(?=[^@]*$)/, '')
     const { data, error: searchError } = await supabase.functions.invoke('friend-cookbook', {
-      body: { action: 'search', email: searchEmail },
+      body: {
+        action: 'search',
+        identifier,
+        ...(identifier.includes('@') ? { email: identifier } : {}),
+      },
     })
     if (searchError) {
-      setError(await functionErrorMessage(searchError))
+      const message = await functionErrorMessage(searchError)
+      setError(message === 'Enter a valid email address.'
+        ? 'The deployed friend search function is out of date. Deploy the updated friend-cookbook function from the latest code, then try again.'
+        : message)
       setBusy(false)
       return
     }
@@ -1178,14 +1218,14 @@ function FriendCookbookModal({ initialEmail, onClose, onAdded, onFriendAdded, on
 
   useEffect(() => {
     if (initialEmail) {
-      setEmail(initialEmail)
+      setIdentifier(initialEmail)
       void loadCookbook(initialEmail)
     }
   }, [initialEmail, loadCookbook])
 
   async function searchCookbook(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
-    await loadCookbook(email.trim())
+    await loadCookbook(identifier.trim())
   }
 
   async function sendFriendRequest() {
@@ -1240,11 +1280,11 @@ function FriendCookbookModal({ initialEmail, onClose, onAdded, onFriendAdded, on
       <section className="friend-modal" role="dialog" aria-modal="true" aria-labelledby="friend-title">
         <button className="modal-close" onClick={onClose} aria-label="Close"><X size={19} /></button>
         <span className="eyebrow">COOK TOGETHER</span>
-        <h2 id="friend-title">Find a cookbook.</h2>
-        <p className="modal-lede">Search with the exact email address they used to sign up. You can browse and copy their recipes after they accept your friend request.</p>
+        <h2 id="friend-title">Find a friend.</h2>
+        <p className="modal-lede">Search by username or signup email to send a friend request. You can browse and copy their recipes after they accept.</p>
         <form className="friend-search" onSubmit={(event) => void searchCookbook(event)}>
-          <label className="field-label">Friend’s email<input type="email" required autoComplete="off" value={email} onChange={(event) => setEmail(event.target.value)} placeholder="friend@example.com" /></label>
-          <button className="primary-button" disabled={busy}>{busy ? <LoaderCircle size={16} className="spin" /> : <Search size={16} />}{busy ? 'Searching…' : 'Find cookbook'}</button>
+          <label className="field-label">Friend’s username or email<input type="text" required autoComplete="off" autoCapitalize="none" value={identifier} onChange={(event) => setIdentifier(event.target.value)} placeholder="@homecook42 or friend@example.com" /></label>
+          <button className="primary-button" disabled={busy}>{busy ? <LoaderCircle size={16} className="spin" /> : <Search size={16} />}{busy ? 'Searching…' : 'Find friend'}</button>
         </form>
         {error && <div className="form-message" role="alert">{error}</div>}
         {searched && ownerId && <div className="friend-request-action">
@@ -1304,6 +1344,186 @@ function FriendCookbookModal({ initialEmail, onClose, onAdded, onFriendAdded, on
             ))}
           </div>
         )}
+      </section>
+    </div>
+  )
+}
+
+function SettingsModal({ user, avatarUrl, onAvatarChanged, onClose, onSignOut }: {
+  user: User
+  avatarUrl: string | null
+  onAvatarChanged: (url: string | null) => void
+  onClose: () => void
+  onSignOut: () => void
+}) {
+  const [username, setUsername] = useState('')
+  const [password, setPassword] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+  const [notice, setNotice] = useState('')
+
+  useEffect(() => {
+    if (!supabase) return
+    void supabase.functions.invoke('friend-cookbook', { body: { action: 'get_username' } }).then(({ data, error: usernameError }) => {
+      if (usernameError) {
+        setError(`Could not load your username: ${usernameError.message}`)
+      } else if (data && typeof data.username === 'string') {
+        setUsername(data.username)
+      }
+    })
+  }, [])
+
+  async function saveUsername(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (!supabase || busy) return
+    setBusy(true)
+    setError('')
+    setNotice('')
+    const { data, error: saveError } = await supabase.functions.invoke('friend-cookbook', {
+      body: { action: 'set_username', username },
+    })
+    setBusy(false)
+    if (saveError) {
+      setError(await functionErrorMessage(saveError))
+      return
+    }
+    if (!data || typeof data.username !== 'string') {
+      setError('Your username could not be saved. Please try again.')
+      return
+    }
+    setUsername(data.username)
+    setNotice(`Your username is @${data.username}.`)
+  }
+
+  async function changePassword(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (!supabase || busy) return
+    setBusy(true)
+    setError('')
+    setNotice('')
+    const { error: updateError } = await supabase.auth.updateUser({ password })
+    setBusy(false)
+    if (updateError) {
+      setError(`Could not update your password: ${updateError.message}`)
+      return
+    }
+    setPassword('')
+    setNotice('Your password was updated.')
+  }
+
+  async function changeProfilePicture(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0]
+    event.target.value = ''
+    if (!file || !supabase || busy) return
+    if (!['image/jpeg', 'image/png', 'image/webp'].includes(file.type)) {
+      setError('Choose a JPEG, PNG, or WEBP image.')
+      return
+    }
+    if (file.size > 5 * 1024 * 1024) {
+      setError('Choose an image smaller than 5 MB.')
+      return
+    }
+    setBusy(true)
+    setError('')
+    setNotice('')
+    const extension = file.type === 'image/jpeg' ? 'jpg' : file.type === 'image/png' ? 'png' : 'webp'
+    const newPath = `${user.id}/${crypto.randomUUID()}.${extension}`
+    const { error: uploadError } = await supabase.storage.from('profile-images').upload(newPath, file, {
+      contentType: file.type,
+      upsert: false,
+    })
+    if (uploadError) {
+      setBusy(false)
+      setError(`Could not upload your profile picture: ${uploadError.message}`)
+      return
+    }
+    const oldPath = user.user_metadata?.avatar_path
+    const { error: metadataError } = await supabase.auth.updateUser({ data: { avatar_path: newPath } })
+    if (metadataError) {
+      const { error: cleanupError } = await supabase.storage.from('profile-images').remove([newPath])
+      setBusy(false)
+      setError(cleanupError
+        ? `Could not save your profile picture: ${metadataError.message}. Uploaded file cleanup also failed: ${cleanupError.message}`
+        : `Could not save your profile picture: ${metadataError.message}`)
+      return
+    }
+    const { data: signedImage, error: signedUrlError } = await supabase.storage.from('profile-images').createSignedUrl(newPath, 3600)
+    if (signedUrlError) {
+      setBusy(false)
+      setError(`Your picture was saved, but could not be displayed: ${signedUrlError.message}`)
+      return
+    }
+    onAvatarChanged(signedImage.signedUrl)
+    let cleanupWarning = ''
+    if (typeof oldPath === 'string' && oldPath.startsWith(`${user.id}/`) && oldPath !== newPath) {
+      const { error: cleanupError } = await supabase.storage.from('profile-images').remove([oldPath])
+      if (cleanupError) cleanupWarning = ` The previous image could not be removed: ${cleanupError.message}`
+    }
+    setBusy(false)
+    setNotice(`Your profile picture was updated.${cleanupWarning}`)
+  }
+
+  async function removeProfilePicture() {
+    if (!supabase || busy) return
+    const oldPath = user.user_metadata?.avatar_path
+    if (typeof oldPath !== 'string' || !oldPath.startsWith(`${user.id}/`)) return
+    setBusy(true)
+    setError('')
+    setNotice('')
+    const { error: metadataError } = await supabase.auth.updateUser({ data: { avatar_path: null } })
+    if (metadataError) {
+      setBusy(false)
+      setError(`Could not remove your profile picture: ${metadataError.message}`)
+      return
+    }
+    onAvatarChanged(null)
+    const { error: removeError } = await supabase.storage.from('profile-images').remove([oldPath])
+    setBusy(false)
+    if (removeError) {
+      setError(`Your picture was removed from your profile, but its stored file could not be deleted: ${removeError.message}`)
+      return
+    }
+    setNotice('Your profile picture was removed.')
+  }
+
+  return (
+    <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget && !busy) onClose() }}>
+      <section className="settings-modal" role="dialog" aria-modal="true" aria-labelledby="settings-title">
+        <button className="modal-close" onClick={onClose} aria-label="Close"><X size={19} /></button>
+        <span className="eyebrow">YOUR ACCOUNT</span>
+        <h2 id="settings-title">Settings</h2>
+        <p className="modal-lede">{user.email}</p>
+        {error && <div className="form-message" role="alert">{error}</div>}
+        {notice && <div className="settings-notice" role="status">{notice}</div>}
+        <section className="settings-section">
+          <h3>Profile picture</h3>
+          <div className="settings-picture-row">
+            {avatarUrl
+              ? <img className="settings-avatar" src={avatarUrl} alt="Your profile" />
+              : <span className="settings-avatar settings-avatar-placeholder">{(user.email?.[0] ?? 'Y').toUpperCase()}</span>}
+            <div className="settings-picture-actions">
+              <label className="secondary-button" htmlFor="profile-picture"><Camera size={14} /> Choose picture</label>
+              <input id="profile-picture" className="visually-hidden" type="file" accept="image/jpeg,image/png,image/webp" disabled={busy} onChange={(event) => void changeProfilePicture(event)} />
+              {typeof user.user_metadata?.avatar_path === 'string' && <button className="text-button" type="button" disabled={busy} onClick={() => void removeProfilePicture()}>Remove picture</button>}
+              <span className="settings-help">JPEG, PNG, or WEBP · up to 5 MB</span>
+            </div>
+          </div>
+        </section>
+        <form className="settings-section settings-form" onSubmit={(event) => void saveUsername(event)}>
+          <h3>Username</h3>
+          <p>Friends can find you by this unique username.</p>
+          <label className="field-label">Your username<input type="text" required minLength={3} maxLength={24} pattern="[A-Za-z0-9_]{3,24}" autoComplete="off" autoCapitalize="none" value={username} onChange={(event) => setUsername(event.target.value)} placeholder="e.g. homecook42" /></label>
+          <button className="secondary-button" disabled={busy}>{busy ? <LoaderCircle size={14} className="spin" /> : null}Save username</button>
+        </form>
+        <form className="settings-section settings-form" onSubmit={(event) => void changePassword(event)}>
+          <h3>Password</h3>
+          <label className="field-label">New password<input type="password" required minLength={6} autoComplete="new-password" value={password} onChange={(event) => setPassword(event.target.value)} placeholder="At least 6 characters" /></label>
+          <button className="secondary-button" disabled={busy}>{busy ? <LoaderCircle size={14} className="spin" /> : null}Update password</button>
+        </form>
+        <div className="settings-footer">
+          <button className="secondary-button" type="button" onClick={onSignOut}><LogOut size={14} /> Sign out</button>
+          {busy && <span className="settings-help">Saving…</span>}
+        </div>
       </section>
     </div>
   )

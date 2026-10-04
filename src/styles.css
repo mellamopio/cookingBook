@@ -115,6 +115,7 @@ button:disabled { cursor: not-allowed; opacity: .68; }
 .avatar { display: grid; width: 28px; height: 28px; flex: 0 0 auto; place-items: center; border-radius: 50%; background: #75846b; color: white; font-family: var(--serif); font-size: 14px; }
 .account-email { flex: 1; overflow: hidden; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
 .account-button > svg { color: #aeb9aa; }
+.avatar-image { object-fit: cover; }
 
 .main-content { max-width: 1600px; min-height: 100vh; margin-left: 248px; padding: 0 6.4% 23px; }
 .topbar { display: flex; align-items: center; justify-content: space-between; min-height: 83px; border-bottom: 1px solid var(--line); }
@@ -318,6 +319,8 @@ button.tag-chip:hover { border-color: #aab7a0; background: #e9ede2; }
 .friend-search { display: flex; align-items: flex-end; gap: 12px; margin-top: 15px; }
 .friend-search .field-label { flex: 1; margin: 0; }
 .friend-search .primary-button { flex: 0 0 auto; }
+.friend-search .secondary-button { flex: 0 0 auto; }
+.username-hint { margin: 6px 0 0; color: #85877e; font-size: 9px; line-height: 1.5; }
 .friend-modal > .form-message { flex: 0 0 auto; margin-top: 12px; }
 .friend-results { min-height: 0; margin-top: 18px; overflow: auto; border-top: 1px solid var(--line); }
 .friend-results-heading { position: sticky; top: 0; z-index: 1; display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 12px 3px; background: #fbfaf6; color: #52594d; font-size: 10px; }
@@ -340,6 +343,26 @@ button.tag-chip:hover { border-color: #aab7a0; background: #e9ede2; }
 .friend-empty { margin-top: 20px; padding: 20px; background: #f2f1eb; color: #777a71; font-size: 11px; text-align: center; }
 .friend-request-action { margin-top: 12px; }
 .friend-status { display: inline-flex; align-items: center; gap: 6px; min-height: 35px; color: #65745c; font-size: 10px; line-height: 1.5; }
+.settings-modal { position: relative; display: flex; width: min(100%, 560px); max-height: calc(100vh - 40px); flex-direction: column; padding: 34px 36px 28px; overflow-y: auto; border: 1px solid #eeece4; border-radius: 4px; background: #fbfaf6; box-shadow: 0 24px 80px #1820162e; animation: modal-in .2s ease-out; }
+.settings-modal h2 { margin: 8px 0 2px; font-family: var(--serif); font-size: 30px; font-weight: 500; }
+.settings-modal > .modal-lede { margin: 0; color: #85877f; font-size: 10px; }
+.settings-modal > .form-message { margin-top: 12px; }
+.settings-notice { margin-top: 12px; padding: 9px 11px; border: 1px solid #d7e1d0; border-radius: 3px; background: #f2f6ef; color: #536c4e; font-size: 10px; line-height: 1.6; }
+.settings-section { margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--line); }
+.settings-section h3 { margin: 0 0 10px; color: #394237; font-family: var(--serif); font-size: 17px; font-weight: 500; }
+.settings-section > p { margin: -4px 0 11px; color: #85877f; font-size: 9px; }
+.settings-picture-row { display: flex; align-items: center; gap: 16px; }
+.settings-avatar { display: grid; width: 70px; height: 70px; flex: 0 0 auto; place-items: center; border-radius: 50%; object-fit: cover; }
+.settings-avatar-placeholder { background: #75846b; color: #fff; font-family: var(--serif); font-size: 28px; }
+.settings-picture-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
+.settings-picture-actions .secondary-button { min-height: 34px; }
+.settings-help { color: #85877f; font-size: 9px; }
+.text-button { padding: 6px 2px; border: 0; background: transparent; color: #8b493d; font-size: 9px; cursor: pointer; }
+.text-button:disabled { cursor: not-allowed; opacity: .68; }
+.visually-hidden { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; clip-path: inset(50%); }
+.settings-form .field-label { margin-bottom: 9px; }
+.settings-form .secondary-button { min-height: 34px; }
+.settings-footer { display: flex; align-items: center; justify-content: space-between; margin-top: 17px; padding-top: 14px; border-top: 1px solid var(--line); }
 
 @media (min-width: 1500px) {
   .main-content { padding-right: 8%; padding-left: 8%; }
@@ -425,8 +448,9 @@ button.tag-chip:hover { border-color: #aab7a0; background: #e9ede2; }
   .shared-recipe .detail-content { padding: 22px 20px 26px; }
   .shared-title { font-size: 27px; }
   .friend-modal { max-height: calc(100vh - 24px); padding: 30px 20px 22px; }
+  .settings-modal { max-height: calc(100vh - 24px); padding: 30px 20px 22px; }
   .friend-search { align-items: stretch; flex-direction: column; gap: 8px; }
-  .friend-search .primary-button { width: 100%; }
+  .friend-search .primary-button, .friend-search .secondary-button { width: 100%; }
   .friend-recipe-detail, .friend-copy-button { margin-left: 0; }
   .setup-card { padding: 34px 25px; }
   .setup-card h1 { font-size: 28px; }

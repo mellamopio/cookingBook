@@ -57,6 +57,29 @@ Deno.serve(async (request) => {
       auth: { autoRefreshToken: false, persistSession: false },
     })
     const body = await request.json()
+    if (body.action === 'get_username') {
+      const { data, error } = await admin
+        .from('cookbook_profiles')
+        .select('username')
+        .eq('user_id', user.id)
+        .maybeSingle()
+      if (error) throw new Error(`Could not load your username: ${error.message}`)
+      return jsonResponse({ username: data?.username ?? '' })
+    }
+
+    if (body.action === 'set_username') {
+      const username = typeof body.username === 'string' ? body.username.trim().toLowerCase() : ''
+      if (!/^[a-z0-9_]{3,24}$/.test(username)) {
+        return jsonResponse({ error: 'Use 3–24 characters: lowercase letters, numbers, or underscores.' }, 400)
+      }
+      const { error } = await admin
+        .from('cookbook_profiles')
+        .upsert({ user_id: user.id, username }, { onConflict: 'user_id' })
+      if (error?.code === '23505') return jsonResponse({ error: 'That username is already taken. Try another one.' }, 409)
+      if (error) throw new Error(`Could not save your username: ${error.message}`)
+      return jsonResponse({ username })
+    }
+
     if (body.action === 'list_friends') {
       const { data: friendships, error: friendsError } = await admin
         .from('cookbook_friendships')
@@ -120,16 +143,45 @@ Deno.serve(async (request) => {
       return jsonResponse({ updated: true })
     }
 
-    const email = typeof body.email === 'string' ? body.email.trim().toLowerCase() : ''
-    if (!email || email.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
-      return jsonResponse({ error: 'Enter a valid email address.' }, 400)
+    const rawIdentifier = typeof body.identifier === 'string'
+      ? body.identifier.trim()
+      : typeof body.email === 'string' ? body.email.trim() : ''
+    const identifier = rawIdentifier.startsWith('@') ? rawIdentifier.slice(1) : rawIdentifier
+    if (!identifier || identifier.length > 254) {
+      return jsonResponse({ error: 'Enter a valid username or email address.' }, 400)
     }
-
-    const { data: friendId, error: lookupError } = await admin.rpc('find_confirmed_user_by_email', { email_query: email })
-    if (lookupError) throw new Error(`Could not look up this account: ${lookupError.message}`)
+    let friendId: string | null
+    let email = ''
+    if (identifier.includes('@')) {
+      email = identifier.toLowerCase()
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+        return jsonResponse({ error: 'Enter a valid username or email address.' }, 400)
+      }
+      const { data, error: lookupError } = await admin.rpc('find_confirmed_user_by_email', { email_query: email })
+      if (lookupError) throw new Error(`Could not look up this account: ${lookupError.message}`)
+      friendId = data
+    } else {
+      const username = identifier.toLowerCase()
+      if (!/^[a-z0-9_]{3,24}$/.test(username)) {
+        return jsonResponse({ error: 'Enter a username (3–24 letters, numbers, or underscores) or an email address.' }, 400)
+      }
+      const { data, error: lookupError } = await admin
+        .from('cookbook_profiles')
+        .select('user_id')
+        .eq('username', username)
+        .maybeSingle()
+      if (lookupError) throw new Error(`Could not look up this account: ${lookupError.message}`)
+      friendId = data?.user_id ?? null
+    }
     if (!friendId || friendId === user.id) {
-      return jsonResponse({ error: friendId ? 'That is your own cookbook.' : 'No confirmed account was found for that email.' }, 404)
+      return jsonResponse({ error: friendId ? 'That is your own account.' : 'No account was found for that username or email.' }, 404)
     }
+    const { data: friendUser, error: friendUserError } = await admin.auth.admin.getUserById(friendId)
+    if (friendUserError) throw new Error(`Could not load this account: ${friendUserError.message}`)
+    if (!friendUser.user?.email || !friendUser.user.email_confirmed_at) {
+      return jsonResponse({ error: 'No confirmed account was found for that username or email.' }, 404)
+    }
+    email = friendUser.user.email
 
     if (body.action === 'add_friend') {
       const { data: existing, error: existingError } = await admin
