@@ -159,6 +159,15 @@ button:disabled { cursor: not-allowed; opacity: .68; }
 .rating-stars.compact .rating-star { width: 17px; height: 20px; }
 .rating-stars.compact .rating-star svg { width: 13px; height: 13px; }
 .rating-star:focus-visible { outline-offset: 1px; }
+.secondary-button { display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-height: 36px; padding: 0 12px; border: 1px solid #dcded3; border-radius: 4px; background: #fffefa; color: #58644e; font-size: 10px; font-weight: 600; cursor: pointer; }
+.secondary-button:hover:not(:disabled) { border-color: #aab7a0; background: #f4f5ef; }
+.share-recipe { position: relative; display: inline-block; margin-top: 12px; }
+.share-panel { position: relative; z-index: 2; width: min(100%, 390px); margin-top: 9px; padding: 14px; border: 1px solid #e1e1d9; border-radius: 4px; background: #fffefa; box-shadow: 0 8px 24px #26302412; }
+.share-panel > p { margin: 0 0 12px; color: #777a71; font-size: 10px; line-height: 1.6; }
+.share-panel .field-label { margin: 0 0 10px; }
+.share-panel .field-label input { font-size: 9px; }
+.share-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.share-notice { margin-top: 9px; color: #536c4e; font-size: 10px; line-height: 1.5; }
 .card-copy { display: flex; width: 100%; flex-direction: column; align-items: flex-start; padding: 13px 1px 0; border: 0; background: transparent; text-align: left; cursor: pointer; }
 .card-title { overflow: hidden; max-width: 100%; color: #30362f; font-family: var(--serif); font-size: 19px; font-weight: 500; letter-spacing: -.2px; text-overflow: ellipsis; white-space: nowrap; }
 .card-description { overflow: hidden; max-width: 100%; margin-top: 5px; color: #85867f; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
@@ -284,6 +293,15 @@ button.tag-chip:hover { border-color: #aab7a0; background: #e9ede2; }
 .step-list p { margin: 0; color: #555b51; font-size: 10px; line-height: 1.75; }
 .source-link { display: inline-flex; align-items: center; gap: 8px; margin-top: 22px; color: #536c4e; font-size: 10px; font-weight: 600; text-decoration: none; }
 .source-link:hover { text-decoration: underline; }
+.shared-page { display: flex; min-height: 100vh; flex-direction: column; align-items: center; gap: 22px; padding: 28px 18px; background: #f2f0e9; }
+.shared-brand { display: inline-flex; align-items: center; gap: 9px; color: #34463a; font-family: var(--serif); font-size: 20px; font-weight: 600; text-decoration: none; }
+.shared-recipe { width: min(100%, 890px); max-height: none; }
+.shared-title { margin: 7px 0 0; color: #30362f; font-family: var(--serif); font-size: 35px; font-weight: 500; letter-spacing: -.8px; }
+.shared-rating { margin-top: 11px; color: #b47a35; font-size: 17px; letter-spacing: 2px; }
+.shared-footer { margin: 26px 0 0; padding-top: 14px; border-top: 1px solid var(--line); color: #85877f; font-size: 10px; }
+.shared-footer a, .shared-error a { color: #536c4e; font-weight: 600; }
+.shared-error { width: min(100%, 520px); margin: auto; padding: 30px; border: 1px solid #e9e6dc; background: #fbfaf7; color: #777a71; font-size: 12px; line-height: 1.7; }
+.shared-error h1 { margin-top: 0; color: #30362f; font-family: var(--serif); font-size: 30px; font-weight: 500; }
 
 @media (min-width: 1500px) {
   .main-content { padding-right: 8%; padding-left: 8%; }
@@ -361,6 +379,9 @@ button.tag-chip:hover { border-color: #aab7a0; background: #e9ede2; }
   .detail-content { padding: 22px 20px 26px; }
   .detail-title-row h2 { font-size: 27px; }
   .detail-columns { grid-template-columns: 1fr; gap: 24px; }
+  .shared-page { padding: 18px 12px; }
+  .shared-recipe .detail-content { padding: 22px 20px 26px; }
+  .shared-title { font-size: 27px; }
   .setup-card { padding: 34px 25px; }
   .setup-card h1 { font-size: 28px; }
 }

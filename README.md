@@ -34,6 +34,8 @@ Rate recipes from one to five stars on their card or detail view. Select the cur
 
 Imported recipe text is kept in its original language. Open a recipe and use its language selector to view the original or translate the title, description, category, ingredients, and method into English, German, or Spanish. Translations are generated on demand and do not replace the saved original. After updating the Edge Function, deploy it with `npx supabase functions deploy extract-recipe`.
 
+Recipes are private unless you create a read-only sharing link from the recipe detail view. Anyone with that link can view the recipe; revoke the link at any time. Friends can open shared links without an account, and can create accounts using your private app URL to save and share their own recipes. Run the `20261004160000_add_recipe_shares.sql` migration and deploy the `share-recipe` Edge Function before using sharing.
+
 ## Recipe imports
 
 Paste a recipe page URL or choose a recipe photo. The extraction function first checks recipe-page structured data, then uses OpenAI to extract the recipe. Review and edit the extracted recipe before saving it, and upload or replace its picture in the recipe form. Images are stored in a private Supabase Storage bucket. Recipe rows and images are scoped to their owner with row-level security.

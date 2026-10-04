@@ -1,2 +1,5 @@
 [functions.extract-recipe]
 verify_jwt = true
+
+[functions.share-recipe]
+verify_jwt = false
