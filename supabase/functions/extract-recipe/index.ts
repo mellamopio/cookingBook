@@ -189,18 +189,19 @@ function validRecipe(value: unknown): ExtractedRecipe {
   }
 }
 
-type GeminiPart = { text: string } | { inline_data: { mime_type: string; data: string } }
+type GeminiPart = { type: 'text'; text: string } | { type: 'image'; mime_type: string; data: string }
 
 async function generateGeminiJson(prompt: string, parts: GeminiPart[]): Promise<unknown> {
   const apiKey = Deno.env.get('GEMINI_API_KEY')
   if (!apiKey) throw new Error('Recipe AI is not configured yet. Add the GEMINI_API_KEY secret to your Supabase project.')
 
-  const response = await fetch('https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent', {
+  const response = await fetch('https://generativelanguage.googleapis.com/v1beta/interactions', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey },
     body: JSON.stringify({
-      contents: [{ role: 'user', parts: [{ text: prompt }, ...parts] }],
-      generationConfig: { responseMimeType: 'application/json', maxOutputTokens: 4096 },
+      model: 'gemini-3.8-flash',
+      input: [{ type: 'text', text: prompt }, ...parts],
+      response_format: { type: 'text', mime_type: 'application/json' },
     }),
   })
   if (!response.ok) {
@@ -208,9 +209,7 @@ async function generateGeminiJson(prompt: string, parts: GeminiPart[]): Promise<
     throw new Error(`Google Gemini request failed (${response.status}): ${details.slice(0, 500)}`)
   }
   const result = await response.json()
-  const text = result.candidates?.[0]?.content?.parts
-    ?.map((part: { text?: unknown }) => typeof part.text === 'string' ? part.text : '')
-    .join('')
+  const text = result.output_text
   if (typeof text !== 'string' || !text.trim()) {
     throw new Error('Google Gemini did not return recipe text. Try a clearer photo or another recipe source.')
   }
@@ -227,9 +226,9 @@ async function extractWithGemini(content: { text?: string; imageDataUrl?: string
   if (content.imageDataUrl) {
     const match = content.imageDataUrl.match(/^data:(image\/(?:jpeg|png|webp|gif));base64,(.+)$/)
     if (!match) throw new Error('Choose a supported recipe photo.')
-    parts.push({ inline_data: { mime_type: match[1], data: match[2] } })
+    parts.push({ type: 'image', mime_type: match[1], data: match[2] })
   } else {
-    parts.push({ text: `Webpage text:\n${content.text ?? ''}` })
+    parts.push({ type: 'text', text: `Webpage text:\n${content.text ?? ''}` })
   }
   return validRecipe(await generateGeminiJson(prompt, parts))
 }
