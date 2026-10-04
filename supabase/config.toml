@@ -1,0 +1,2 @@
+[functions.extract-recipe]
+verify_jwt = true
