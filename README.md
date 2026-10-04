@@ -1,6 +1,6 @@
-# My personal Cookbook
+# Cook & Tell
 
-A personal recipe library for collecting recipes from links and photos. The app extracts ingredients, instructions, timing, and categories, then saves recipes to your Supabase account.
+A social recipe cookbook for collecting recipes from links and photos, then sharing them with friends or publicly when you choose.
 
 ## Run locally
 
@@ -32,11 +32,13 @@ Sign up with your email in the app. For production email confirmation, set Supab
 
 Recipes use a category dropdown, with an option to create a new category that will then appear in the list. Add comma-separated tags to recipes to find them with the search field. The optional “Recommended from” field records who or what introduced you to a recipe.
 
-Rate recipes from one to five stars on their card or detail view. Select the current rating again to clear it.
+Rate community recipes from one to five stars on their card or detail view. Select the current rating again to clear it. Discovery includes public recipes, accepted friends' recipes, and public recipes from cooks you follow; best-rated sorting uses a weighted rating so a single vote does not dominate.
 
-Imported recipe text is kept in its original language. Open a recipe and use its language selector to view the original or translate the title, description, category, ingredients, and method into English, German, or Spanish. Translations are generated on demand and do not replace the saved original. After updating the Edge Function, deploy it with `npx supabase functions deploy extract-recipe`.
+Imported recipe text is kept in its original language. Open a recipe and use its language selector to view the original or translate the title, description, category, ingredients, and method into English, German, or Spanish. Translations are saved to the signed-in user's account and never replace the original. Choose a preferred language in Settings.
 
-Recipes are private to their owner by default. In Find a friend, search for friends by username or signup email. Manage your username, password, and profile picture in Settings. A friend request must be accepted before either person can browse or copy recipes. Anyone with the deployed app URL can create an account. Alternatively, individual read-only recipe links can be shared with anyone and revoked by the owner. Run the `20261004160000_add_recipe_shares.sql`, `20261004170000_add_email_cookbook_lookup.sql`, `20261004180000_add_cookbook_friends.sql`, `20261004190000_add_cookbook_usernames.sql`, and `20261004200000_add_profile_images.sql` migrations, then deploy the Edge Functions:
+Recipes default to private, including recipes imported from another website. In the recipe editor, choose Private (only you), Friends (accepted friends), or Public (anyone). Supabase row-level security enforces these visibility choices; a friend request must be accepted before friends-only recipes can be read. Copying a friend's recipe creates a private copy in your cookbook. Find cooks by username or email, send friend requests, or follow them to see their public recipes. Save recipes, rate and comment on accessible recipes, attach photos to comments, review recent recipe history, and receive notifications for social activity. Manage your username, password, profile picture, and preferred language in Settings. Anyone with the deployed app URL can create an account. Individual read-only recipe links remain an optional way to share a recipe directly.
+
+Run every unapplied migration in filename order. For an existing installation, the Cook & Tell social features additionally require `20261004210000_add_recipe_visibility.sql`, `20261004220000_add_social_features.sql`, and `20261004230000_add_recipe_media_and_translations.sql`. These migrations create the RLS-protected social tables and private image buckets; do not rerun migrations already recorded by Supabase. Deploy the Edge Functions after applying the relevant migrations:
 
    ```sh
    npx supabase functions deploy share-recipe
@@ -45,7 +47,7 @@ Recipes are private to their owner by default. In Find a friend, search for frie
 
 ## Recipe imports
 
-Paste a recipe page URL or choose a recipe photo. The extraction function first checks recipe-page structured data, then uses Gemini to extract the recipe from page text or the image. Review and edit the extracted recipe before saving it, and upload or replace its picture in the recipe form. Images are stored in a private Supabase Storage bucket. Recipe rows and images are scoped to their owner with row-level security.
+Paste a recipe page URL or choose up to four recipe-page photos. The extraction function first checks recipe-page structured data, then uses Gemini to extract the recipe from page text or the ordered image pages. Review and edit the extracted recipe before saving it. Photo imports keep their original pages in a private bucket and allow a separate cover photo. Recipe rows, cover photos, source pages, and comment images are protected by row-level security and private Storage policies.
 
 Recipe extraction and on-demand translation use Gemini from the Supabase Edge Function. Keep `GEMINI_API_KEY` in Supabase secrets only; never add it to the frontend environment or Vercel variables.
 

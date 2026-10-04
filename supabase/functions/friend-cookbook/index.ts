@@ -8,7 +8,9 @@ const corsHeaders = {
 
 type RecipeRow = {
   id: string
+  user_id: string
   title: string
+  visibility: 'private' | 'friends' | 'public'
   description: string
   ingredients: string[]
   steps: string[]
@@ -24,7 +26,7 @@ type RecipeRow = {
   created_at: string
 }
 
-const recipeColumns = 'id, title, description, ingredients, steps, category, tags, recommended_from, prep_time_minutes, cook_time_minutes, servings, source_url, image_path, rating, created_at'
+const recipeColumns = 'id, user_id, title, visibility, description, ingredients, steps, category, tags, recommended_from, prep_time_minutes, cook_time_minutes, servings, source_url, image_path, rating, created_at'
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
 
 const jsonResponse = (body: unknown, status = 200) =>
@@ -103,6 +105,35 @@ Deno.serve(async (request) => {
         }
       }
       return jsonResponse({ friends, requests })
+    }
+
+    if (body.action === 'friends_feed') {
+      const { data: links, error: linksError } = await admin
+        .from('cookbook_friendships')
+        .select('requester_id, recipient_id')
+        .eq('status', 'accepted')
+        .or(`requester_id.eq.${user.id},recipient_id.eq.${user.id}`)
+      if (linksError) throw new Error(`Could not load your friends' recipes: ${linksError.message}`)
+      const friendIds = (links ?? []).map((link) => link.requester_id === user.id ? link.recipient_id : link.requester_id)
+      if (!friendIds.length) return jsonResponse({ recipes: [] })
+      const { data, error: recipesError } = await admin
+        .from('recipes')
+        .select(recipeColumns)
+        .in('user_id', friendIds)
+        .in('visibility', ['friends', 'public'])
+        .order('created_at', { ascending: false })
+        .limit(60)
+      if (recipesError) throw new Error(`Could not load your friends' recipes: ${recipesError.message}`)
+      const recipes = await Promise.all((data ?? []).map(async (recipe) => {
+        let imageUrl: string | null = null
+        if (recipe.image_path) {
+          const { data: image, error: imageError } = await admin.storage.from('recipe-images').createSignedUrl(recipe.image_path, 3600)
+          if (imageError) throw new Error(`Could not load a friend's recipe image: ${imageError.message}`)
+          imageUrl = image.signedUrl
+        }
+        return { ...recipe, tags: recipe.tags ?? [], imageUrl }
+      }))
+      return jsonResponse({ recipes })
     }
 
     if (body.action === 'remove_friend') {
@@ -224,6 +255,7 @@ Deno.serve(async (request) => {
           .from('recipes')
           .select(recipeColumns)
           .eq('user_id', friendId)
+          .in('visibility', ['friends', 'public'])
           .order('created_at', { ascending: false })
           .range(start, start + pageSize - 1)
         if (error) throw new Error(`Could not load this cookbook: ${error.message}`)
@@ -256,6 +288,7 @@ Deno.serve(async (request) => {
         .select(recipeColumns)
         .eq('id', body.recipeId)
         .eq('user_id', friendId)
+        .in('visibility', ['friends', 'public'])
         .maybeSingle()
       if (sourceError) throw new Error(`Could not load the selected recipe: ${sourceError.message}`)
       if (!source) return jsonResponse({ error: 'This recipe is no longer available in that cookbook.' }, 404)
@@ -278,6 +311,7 @@ Deno.serve(async (request) => {
         .from('recipes')
         .insert({
           user_id: user.id,
+          visibility: 'private',
           title: source.title,
           description: source.description,
           ingredients: source.ingredients,

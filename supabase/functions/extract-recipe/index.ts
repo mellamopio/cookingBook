@@ -243,13 +243,16 @@ async function generateGeminiJson(prompt: string, parts: GeminiPart[]): Promise<
   }
 }
 
-async function extractWithGemini(content: { text?: string; imageDataUrl?: string }): Promise<ExtractedRecipe> {
-  const prompt = `Extract one recipe from the provided ${content.imageDataUrl ? 'photo' : 'webpage text'}. Return JSON with exactly these fields: title (string), description (string), category (short string such as Breakfast, Lunch, Dinner, Dessert, or Other), ingredients (array of strings), steps (array of strings), prep_time_minutes (number or null), cook_time_minutes (number or null), servings (number or null). Preserve the language used by the source; do not translate. Do not invent missing ingredients, instructions, times, or servings. For a photo, transcribe only what is legible. If no recipe is present, use an empty title.`
+async function extractWithGemini(content: { text?: string; imageDataUrls?: string[] }): Promise<ExtractedRecipe> {
+  const hasImages = Boolean(content.imageDataUrls?.length)
+  const prompt = `Extract one recipe from the provided ${hasImages ? 'recipe photo or sequential recipe-page photos' : 'webpage text'}. When multiple photos are provided, treat them as pages of the same recipe in the order supplied. Return JSON with exactly these fields: title (string), description (string), category (short string such as Breakfast, Lunch, Dinner, Dessert, or Other), ingredients (array of strings), steps (array of strings), prep_time_minutes (number or null), cook_time_minutes (number or null), servings (number or null). Preserve the language used by the source; do not translate. Do not invent missing ingredients, instructions, times, or servings. For photos, transcribe only what is legible. If no recipe is present, use an empty title.`
   const parts: GeminiPart[] = []
-  if (content.imageDataUrl) {
-    const match = content.imageDataUrl.match(/^data:(image\/(?:jpeg|png|webp|gif));base64,(.+)$/)
-    if (!match) throw new Error('Choose a supported recipe photo.')
-    parts.push({ type: 'image', mime_type: match[1], data: match[2] })
+  if (content.imageDataUrls?.length) {
+    for (const imageDataUrl of content.imageDataUrls) {
+      const match = imageDataUrl.match(/^data:(image\/(?:jpeg|png|webp|gif));base64,(.+)$/)
+      if (!match) throw new Error('Choose a supported recipe photo.')
+      parts.push({ type: 'image', mime_type: match[1], data: match[2] })
+    }
   } else {
     parts.push({ type: 'text', text: `Webpage text:\n${content.text ?? ''}` })
   }
@@ -340,7 +343,7 @@ Deno.serve(async (request) => {
         page = await fetch(url, {
           signal: controller.signal,
           redirect: 'manual',
-          headers: { 'User-Agent': 'MiseRecipeImporter/1.0', Accept: 'text/html,application/xhtml+xml' },
+          headers: { 'User-Agent': 'CookTellRecipeImporter/1.0', Accept: 'text/html,application/xhtml+xml' },
         })
       } finally {
         clearTimeout(timeout)
@@ -362,11 +365,21 @@ Deno.serve(async (request) => {
       return jsonResponse({ recipe })
     }
 
-    if (typeof body.imageDataUrl === 'string') {
-      if (!/^data:image\/(jpeg|png|webp|gif);base64,/.test(body.imageDataUrl) || body.imageDataUrl.length > 11_500_000) {
-        return jsonResponse({ error: 'Choose a supported image smaller than 8 MB.' }, 400)
+    const imageDataUrls = Array.isArray(body.imageDataUrls)
+      ? body.imageDataUrls
+      : typeof body.imageDataUrl === 'string' ? [body.imageDataUrl] : null
+    if (imageDataUrls) {
+      if (
+        imageDataUrls.length < 1 ||
+        imageDataUrls.length > 4 ||
+        !imageDataUrls.every((image) => typeof image === 'string' &&
+          /^data:image\/(jpeg|png|webp|gif);base64,/.test(image) &&
+          image.length <= 11_500_000) ||
+        imageDataUrls.reduce((total, image) => total + (typeof image === 'string' ? image.length : 0), 0) > 5_500_000
+      ) {
+        return jsonResponse({ error: 'Choose up to 4 supported recipe photos with a combined compressed size under 5.5 MB.' }, 400)
       }
-      return jsonResponse({ recipe: await extractWithGemini({ imageDataUrl: body.imageDataUrl }) })
+      return jsonResponse({ recipe: await extractWithGemini({ imageDataUrls }) })
     }
     return jsonResponse({ error: 'Provide a recipe-page URL or an image.' }, 400)
   } catch (error) {

@@ -5,10 +5,13 @@ import {
   ArrowLeft,
   ArrowRight,
   BookOpen,
+  Bookmark,
+  Bell,
   Check,
   ChefHat,
   Clock3,
   Coffee,
+  Compass,
   ImagePlus,
   LoaderCircle,
   LogOut,
@@ -43,6 +46,20 @@ type RecipeTranslation = {
   steps: string[]
 }
 
+type RecipeSourceImage = { id: string; imageUrl: string }
+
+function isRecipeTranslation(value: unknown): value is RecipeTranslation {
+  if (!value || typeof value !== 'object') return false
+  const item = value as Record<string, unknown>
+  return typeof item.title === 'string' &&
+    typeof item.description === 'string' &&
+    typeof item.category === 'string' &&
+    Array.isArray(item.ingredients) &&
+    Array.isArray(item.steps) &&
+    item.ingredients.every((entry) => typeof entry === 'string') &&
+    item.steps.every((entry) => typeof entry === 'string')
+}
+
 type CookbookFriend = {
   id: string
   email: string
@@ -54,8 +71,43 @@ type FriendRequest = {
   requesterId: string
 }
 
+type SocialRecipe = Recipe & {
+  authorUsername?: string | null
+  ratingCount?: number
+  averageRating?: number | null
+}
+
+type RecipeComment = {
+  id: string
+  recipe_id: string
+  user_id: string
+  body: string
+  image_path: string | null
+  created_at: string
+  author: string
+  imageUrl: string | null
+}
+
+type CookbookNotification = {
+  id: string
+  actor_id: string | null
+  event_type: string
+  recipe_id: string | null
+  created_at: string
+  read_at: string | null
+  actorName: string
+}
+
+function weightedRating(recipe: SocialRecipe, prior: number): number {
+  const count = recipe.ratingCount ?? 0
+  if (!count) return -1
+  const priorVotes = 5
+  return (((recipe.averageRating ?? 0) * count) + (prior * priorVotes)) / (count + priorVotes)
+}
+
 const categories = ['Breakfast', 'Lunch', 'Dinner', 'Dessert', 'Snack']
 const createCategoryOption = '__create_category__'
+type RecipeVisibility = Recipe['visibility']
 
 function parseTags(value: string): string[] {
   const seen = new Set<string>()
@@ -84,7 +136,7 @@ async function functionErrorMessage(error: { message: string; context?: unknown 
 
 async function compressImageForExtraction(file: File): Promise<string> {
   const bitmap = await createImageBitmap(file)
-  const scale = Math.min(1, 1600 / Math.max(bitmap.width, bitmap.height))
+  const scale = Math.min(1, 1400 / Math.max(bitmap.width, bitmap.height))
   const canvas = document.createElement('canvas')
   canvas.width = Math.round(bitmap.width * scale)
   canvas.height = Math.round(bitmap.height * scale)
@@ -96,7 +148,7 @@ async function compressImageForExtraction(file: File): Promise<string> {
   context.drawImage(bitmap, 0, 0, canvas.width, canvas.height)
   bitmap.close()
   const compressed = await new Promise<Blob>((resolve, reject) => {
-    canvas.toBlob((blob) => blob ? resolve(blob) : reject(new Error('The selected photo could not be compressed.')), 'image/jpeg', 0.78)
+    canvas.toBlob((blob) => blob ? resolve(blob) : reject(new Error('The selected photo could not be compressed.')), 'image/jpeg', 0.72)
   })
   return new Promise((resolve, reject) => {
     const reader = new FileReader()
@@ -116,10 +168,19 @@ function App() {
   const [user, setUser] = useState<User | null>(null)
   const [sessionLoading, setSessionLoading] = useState(true)
   const [recipes, setRecipes] = useState<Recipe[]>([])
+  const [discoveryRecipes, setDiscoveryRecipes] = useState<SocialRecipe[]>([])
+  const [friendsFeedRecipes, setFriendsFeedRecipes] = useState<SocialRecipe[]>([])
+  const [followingFeedRecipes, setFollowingFeedRecipes] = useState<SocialRecipe[]>([])
+  const [savedRecipes, setSavedRecipes] = useState<Recipe[]>([])
+  const [recentlyViewedRecipes, setRecentlyViewedRecipes] = useState<Recipe[]>([])
+  const [savedRecipeIds, setSavedRecipeIds] = useState<Set<string>>(new Set())
   const [friends, setFriends] = useState<CookbookFriend[]>([])
   const [friendRequests, setFriendRequests] = useState<FriendRequest[]>([])
   const [recipesLoading, setRecipesLoading] = useState(false)
   const [activeCategory, setActiveCategory] = useState('All recipes')
+  const [activeView, setActiveView] = useState<'discover' | 'cookbook' | 'saved'>('cookbook')
+  const [discoverySort, setDiscoverySort] = useState<'new' | 'best'>('new')
+  const [discoveryFeed, setDiscoveryFeed] = useState<'public' | 'friends' | 'following'>('public')
   const [query, setQuery] = useState('')
   const [isAddOpen, setIsAddOpen] = useState(false)
   const [isFriendsOpen, setIsFriendsOpen] = useState(false)
@@ -149,6 +210,11 @@ function App() {
 
   useEffect(() => {
     setRecipes([])
+    setDiscoveryRecipes([])
+    setFollowingFeedRecipes([])
+    setSavedRecipes([])
+    setRecentlyViewedRecipes([])
+    setSavedRecipeIds(new Set())
     setFriends([])
     setFriendRequests([])
     setAvatarUrl(null)
@@ -157,6 +223,8 @@ function App() {
     if (user) {
       void loadRecipes()
       void loadFriends()
+      void loadDiscoveryRecipes()
+      void loadRecentlyViewed()
     } else {
       setRecipesLoading(false)
     }
@@ -209,6 +277,7 @@ function App() {
     const { data, error } = await client
       .from('recipes')
       .select('*')
+      .eq('user_id', user.id)
       .order('created_at', { ascending: false })
     if (error) {
       setLoadError(error.message)
@@ -228,6 +297,339 @@ function App() {
     }))
     setRecipes(withImages)
     setRecipesLoading(false)
+    await loadSavedRecipes(client)
+  }
+
+  async function loadSavedRecipes(client = supabase) {
+    if (!client || !user) return
+    const { data: saves, error: savesError } = await client
+      .from('recipe_saves')
+      .select('recipe_id')
+      .eq('user_id', user.id)
+      .order('created_at', { ascending: false })
+    if (savesError) {
+      setLoadError(`Could not load saved recipes: ${savesError.message}`)
+      return
+    }
+    const ids = (saves ?? []).map((save) => save.recipe_id)
+    setSavedRecipeIds(new Set(ids))
+    if (!ids.length) {
+      setSavedRecipes([])
+      return
+    }
+    const { data, error } = await client.from('recipes').select('*').in('id', ids)
+    if (error) {
+      setLoadError(`Could not load saved recipes: ${error.message}`)
+      return
+    }
+    const recipesById = new Map((data ?? []).map((recipe) => [recipe.id, recipe]))
+    const ordered = ids.flatMap((id) => {
+      const recipe = recipesById.get(id)
+      return recipe ? [recipe as Recipe] : []
+    })
+    if (!ordered.length) {
+      setSavedRecipes([])
+      return
+    }
+    const [{ data: ratings, error: ratingsError }, { data: profiles, error: profilesError }] = await Promise.all([
+      client.from('recipe_ratings').select('recipe_id, user_id, rating').in('recipe_id', ids),
+      client.from('cookbook_profiles').select('user_id, username').in('user_id', [...new Set(ordered.map((recipe) => recipe.user_id).filter((id): id is string => Boolean(id)))]),
+    ])
+    if (ratingsError) {
+      setLoadError(`Could not load saved recipe ratings: ${ratingsError.message}`)
+      return
+    }
+    if (profilesError) {
+      setLoadError(`Could not load saved recipe authors: ${profilesError.message}`)
+      return
+    }
+    const names = new Map((profiles ?? []).map((profile) => [profile.user_id, profile.username]))
+    const withRatings = ordered.map((recipe) => {
+      const recipeRatings = (ratings ?? []).filter((item) => item.recipe_id === recipe.id)
+      return {
+        ...recipe,
+        rating: recipe.user_id === user.id ? recipe.rating : recipeRatings.find((item) => item.user_id === user.id)?.rating ?? null,
+        averageRating: recipeRatings.length ? recipeRatings.reduce((sum, item) => sum + item.rating, 0) / recipeRatings.length : null,
+        ratingCount: recipeRatings.length,
+        authorUsername: recipe.user_id ? names.get(recipe.user_id) ?? null : null,
+      } as SocialRecipe
+    })
+    const withImages = await Promise.all(withRatings.map(async (recipe) => {
+      if (!recipe.image_path) return recipe
+      const { data: image, error: imageError } = await client.storage.from('recipe-images').createSignedUrl(recipe.image_path, 3600)
+      if (imageError) {
+        setLoadError(`Could not load a saved recipe image: ${imageError.message}`)
+        return recipe
+      }
+      return { ...recipe, imageUrl: image.signedUrl }
+    }))
+    setSavedRecipes(withImages)
+  }
+
+  async function loadRecentlyViewed() {
+    if (!supabase || !user) return
+    const client = supabase
+    const { data: views, error: viewsError } = await client
+      .from('recipe_views')
+      .select('recipe_id, viewed_at')
+      .eq('user_id', user.id)
+      .order('viewed_at', { ascending: false })
+      .limit(12)
+    if (viewsError) {
+      setLoadError(`Could not load recently viewed recipes: ${viewsError.message}`)
+      return
+    }
+    const ids = (views ?? []).map((view) => view.recipe_id)
+    if (!ids.length) {
+      setRecentlyViewedRecipes([])
+      return
+    }
+    const { data, error } = await client.from('recipes').select('*').in('id', ids)
+    if (error) {
+      setLoadError(`Could not load recently viewed recipes: ${error.message}`)
+      return
+    }
+    const ordered = new Map((data ?? []).map((recipe) => [recipe.id, recipe]))
+    const recent = ids.flatMap((id) => {
+      const recipe = ordered.get(id)
+      return recipe ? [recipe] : []
+    })
+    const { data: ratings, error: ratingsError } = await client.from('recipe_ratings').select('recipe_id, user_id, rating').in('recipe_id', ids)
+    if (ratingsError) {
+      setLoadError(`Could not load recent recipe ratings: ${ratingsError.message}`)
+      return
+    }
+    const withRatings = recent.map((recipe) => ({
+      ...recipe,
+      rating: recipe.user_id === user.id
+        ? recipe.rating
+        : (ratings ?? []).find((rating) => rating.recipe_id === recipe.id && rating.user_id === user.id)?.rating ?? null,
+    }) as Recipe)
+    const withImages = await Promise.all(withRatings.map(async (recipe) => {
+      if (!recipe.image_path) return recipe as Recipe
+      const { data: image, error: imageError } = await client.storage.from('recipe-images').createSignedUrl(recipe.image_path, 3600)
+      if (imageError) {
+        setLoadError(`Could not load a recent recipe image: ${imageError.message}`)
+        return recipe as Recipe
+      }
+      return { ...recipe, imageUrl: image.signedUrl } as Recipe
+    }))
+    setRecentlyViewedRecipes(withImages)
+  }
+
+  async function openRecipe(recipe: Recipe) {
+    let openedRecipe = recipe
+    if (!supabase || !user) return
+    if (recipe.user_id !== user.id) {
+      const { data: rating, error: ratingError } = await supabase
+        .from('recipe_ratings')
+        .select('rating')
+        .eq('recipe_id', recipe.id)
+        .eq('user_id', user.id)
+        .maybeSingle()
+      if (ratingError) {
+        setNotice(`Could not load your rating: ${ratingError.message}`)
+      } else {
+        openedRecipe = { ...recipe, rating: rating?.rating ?? null }
+      }
+    }
+    setSelectedRecipe(openedRecipe)
+    const { error } = await supabase
+      .from('recipe_views')
+      .upsert({ user_id: user.id, recipe_id: openedRecipe.id, viewed_at: new Date().toISOString() }, { onConflict: 'user_id,recipe_id' })
+    if (error) {
+      setNotice(`Recipe opened, but its view history could not be saved: ${error.message}`)
+      return
+    }
+    setRecentlyViewedRecipes((current) => [openedRecipe, ...current.filter((item) => item.id !== openedRecipe.id)].slice(0, 12))
+  }
+
+  async function loadDiscoveryRecipes() {
+    if (!supabase) return
+    const client = supabase
+    const { data, error } = await client
+      .from('recipes')
+      .select('*')
+      .eq('visibility', 'public')
+      .order('created_at', { ascending: false })
+      .limit(60)
+    if (error) {
+      setLoadError(`Could not load public recipes: ${error.message}`)
+      return
+    }
+    const rows = data ?? []
+    if (!rows.length) {
+      setDiscoveryRecipes([])
+      return
+    }
+    const ids = rows.map((recipe) => recipe.id)
+    const ownerIds = [...new Set(rows.map((recipe) => recipe.user_id))]
+    const [{ data: ratings, error: ratingsError }, { data: profiles, error: profilesError }] = await Promise.all([
+      client.from('recipe_ratings').select('recipe_id, user_id, rating').in('recipe_id', ids),
+      client.from('cookbook_profiles').select('user_id, username').in('user_id', ownerIds),
+    ])
+    if (ratingsError) {
+      setLoadError(`Could not load public recipe ratings: ${ratingsError.message}`)
+      return
+    }
+    if (profilesError) {
+      setLoadError(`Could not load recipe authors: ${profilesError.message}`)
+      return
+    }
+    const ratingGroups = new Map<string, number[]>()
+    for (const rating of ratings ?? []) {
+      ratingGroups.set(rating.recipe_id, [...(ratingGroups.get(rating.recipe_id) ?? []), rating.rating])
+    }
+    const profileNames = new Map((profiles ?? []).map((profile) => [profile.user_id, profile.username]))
+    const enriched = await Promise.all(rows.map(async (row) => {
+      const recipe = row as Recipe & { user_id: string }
+      const values = ratingGroups.get(recipe.id) ?? []
+      const average = values.length ? values.reduce((total, value) => total + value, 0) / values.length : null
+      const myRating = (ratings ?? []).find((rating) => rating.recipe_id === recipe.id && rating.user_id === user?.id)?.rating ?? null
+      const image = recipe.image_path
+        ? await client.storage.from('recipe-images').createSignedUrl(recipe.image_path, 3600)
+        : null
+      if (image?.error) setLoadError(`Could not load a public recipe image: ${image.error.message}`)
+      return {
+        ...recipe,
+        rating: myRating,
+        averageRating: average,
+        ratingCount: values.length,
+        authorUsername: profileNames.get(recipe.user_id) ?? null,
+        imageUrl: image?.data?.signedUrl ?? null,
+      } as SocialRecipe
+    }))
+    setDiscoveryRecipes(enriched)
+  }
+
+  async function loadFriendsFeed() {
+    if (!supabase) return
+    const { data, error } = await supabase.functions.invoke('friend-cookbook', { body: { action: 'friends_feed' } })
+    if (error) {
+      setLoadError(`Could not load friends' recipes: ${await functionErrorMessage(error)}`)
+      return
+    }
+    if (!data || !Array.isArray(data.recipes)) {
+      setLoadError('Friends feed returned an invalid response.')
+      return
+    }
+    const rows = data.recipes as (Recipe & { user_id: string; imageUrl?: string | null })[]
+    if (!rows.length) {
+      setFriendsFeedRecipes([])
+      return
+    }
+    const ids = rows.map((recipe) => recipe.id)
+    const ownerIds = [...new Set(rows.map((recipe) => recipe.user_id))]
+    const [{ data: ratings, error: ratingsError }, { data: profiles, error: profilesError }] = await Promise.all([
+      supabase.from('recipe_ratings').select('recipe_id, user_id, rating').in('recipe_id', ids),
+      supabase.from('cookbook_profiles').select('user_id, username').in('user_id', ownerIds),
+    ])
+    if (ratingsError) {
+      setLoadError(`Could not load recipe ratings: ${ratingsError.message}`)
+      return
+    }
+    if (profilesError) {
+      setLoadError(`Could not load recipe authors: ${profilesError.message}`)
+      return
+    }
+    const profileNames = new Map((profiles ?? []).map((profile) => [profile.user_id, profile.username]))
+    setFriendsFeedRecipes(rows.map((recipe) => {
+      const recipeRatings = (ratings ?? []).filter((rating) => rating.recipe_id === recipe.id)
+      const average = recipeRatings.length
+        ? recipeRatings.reduce((sum, item) => sum + item.rating, 0) / recipeRatings.length
+        : null
+      const myRating = recipeRatings.find((item) => item.user_id === user?.id)?.rating ?? null
+      return {
+        ...recipe,
+        rating: myRating,
+        averageRating: average,
+        ratingCount: recipeRatings.length,
+        authorUsername: profileNames.get(recipe.user_id) ?? null,
+      }
+    }))
+  }
+
+  async function loadFollowingFeed() {
+    if (!supabase || !user) return
+    const client = supabase
+    const { data: follows, error: followsError } = await client
+      .from('cookbook_follows')
+      .select('followed_id')
+      .eq('follower_id', user.id)
+    if (followsError) {
+      setLoadError(`Could not load followed cooks: ${followsError.message}`)
+      return
+    }
+    const userIds = (follows ?? []).map((follow) => follow.followed_id)
+    if (!userIds.length) {
+      setFollowingFeedRecipes([])
+      return
+    }
+    const { data: rows, error: recipesError } = await client
+      .from('recipes')
+      .select('*')
+      .in('user_id', userIds)
+      .eq('visibility', 'public')
+      .order('created_at', { ascending: false })
+      .limit(60)
+    if (recipesError) {
+      setLoadError(`Could not load recipes from followed cooks: ${recipesError.message}`)
+      return
+    }
+    if (!rows?.length) {
+      setFollowingFeedRecipes([])
+      return
+    }
+    const recipeIds = rows.map((row) => row.id)
+    const [{ data: ratings, error: ratingsError }, { data: profiles, error: profilesError }] = await Promise.all([
+      client.from('recipe_ratings').select('recipe_id, user_id, rating').in('recipe_id', recipeIds),
+      client.from('cookbook_profiles').select('user_id, username').in('user_id', userIds),
+    ])
+    if (ratingsError) {
+      setLoadError(`Could not load followed recipe ratings: ${ratingsError.message}`)
+      return
+    }
+    if (profilesError) {
+      setLoadError(`Could not load followed cooks: ${profilesError.message}`)
+      return
+    }
+    const names = new Map((profiles ?? []).map((profile) => [profile.user_id, profile.username]))
+    const enriched = await Promise.all(rows.map(async (row) => {
+      const recipeRatings = (ratings ?? []).filter((rating) => rating.recipe_id === row.id)
+      const image = row.image_path
+        ? await client.storage.from('recipe-images').createSignedUrl(row.image_path, 3600)
+        : null
+      if (image?.error) setLoadError(`Could not load a followed recipe image: ${image.error.message}`)
+      return {
+        ...row,
+        rating: recipeRatings.find((item) => item.user_id === user.id)?.rating ?? null,
+        averageRating: recipeRatings.length ? recipeRatings.reduce((sum, item) => sum + item.rating, 0) / recipeRatings.length : null,
+        ratingCount: recipeRatings.length,
+        authorUsername: names.get(row.user_id) ?? null,
+        imageUrl: image?.data?.signedUrl ?? null,
+      } as SocialRecipe
+    }))
+    setFollowingFeedRecipes(enriched)
+  }
+
+  async function toggleSavedRecipe(recipe: Recipe) {
+    if (!supabase || !user) return
+    const alreadySaved = savedRecipeIds.has(recipe.id)
+    const result = alreadySaved
+      ? await supabase.from('recipe_saves').delete().eq('user_id', user.id).eq('recipe_id', recipe.id)
+      : await supabase.from('recipe_saves').insert({ user_id: user.id, recipe_id: recipe.id })
+    if (result.error) {
+      setNotice(`Could not ${alreadySaved ? 'remove' : 'save'} recipe: ${result.error.message}`)
+      return
+    }
+    setSavedRecipeIds((current) => {
+      const next = new Set(current)
+      if (alreadySaved) next.delete(recipe.id)
+      else next.add(recipe.id)
+      return next
+    })
+    await loadSavedRecipes()
+    setNotice(alreadySaved ? 'Recipe removed from saved recipes.' : 'Recipe saved to your cookbook.')
   }
 
   async function setRecipeRating(recipe: Recipe, rating: number | null) {
@@ -246,6 +648,33 @@ function App() {
     setSelectedRecipe((current) => current?.id === recipe.id
       ? { ...current, rating }
       : current)
+  }
+
+  async function rateAnyRecipe(recipe: Recipe, rating: number) {
+    if (!supabase || !user) return
+    if (recipe.user_id === user.id) {
+      await setRecipeRating(recipe, recipe.rating === rating ? null : rating)
+      return
+    }
+    const result = recipe.rating === rating
+      ? await supabase.from('recipe_ratings').delete().eq('user_id', user.id).eq('recipe_id', recipe.id)
+      : await supabase.from('recipe_ratings').upsert(
+        { user_id: user.id, recipe_id: recipe.id, rating },
+        { onConflict: 'user_id,recipe_id' },
+      )
+    if (result.error) {
+      setNotice(`Could not save your rating: ${result.error.message}`)
+      return
+    }
+    const nextRating = recipe.rating === rating ? null : rating
+    setSelectedRecipe((current) => current?.id === recipe.id ? { ...current, rating: nextRating } : current)
+    setRecentlyViewedRecipes((current) => current.map((item) => item.id === recipe.id ? { ...item, rating: nextRating } : item))
+    const refresh: Promise<void>[] = []
+    if (discoveryRecipes.some((item) => item.id === recipe.id)) refresh.push(loadDiscoveryRecipes())
+    if (friendsFeedRecipes.some((item) => item.id === recipe.id)) refresh.push(loadFriendsFeed())
+    if (followingFeedRecipes.some((item) => item.id === recipe.id)) refresh.push(loadFollowingFeed())
+    if (savedRecipes.some((item) => item.id === recipe.id)) refresh.push(loadSavedRecipes())
+    await Promise.all(refresh)
   }
 
   async function removeFriend(friend: CookbookFriend) {
@@ -296,6 +725,13 @@ function App() {
     const searchText = `${recipe.title} ${recipe.description} ${recipe.ingredients.join(' ')} ${(recipe.tags ?? []).join(' ')}`.toLowerCase()
     return matchesCategory && searchText.includes(query.trim().toLowerCase())
   }), [recipes, activeCategory, query])
+  const priorRating = useMemo(() => {
+    const feedRecipes = discoveryFeed === 'friends' ? friendsFeedRecipes : discoveryRecipes
+    const total = feedRecipes.reduce((sum, recipe) => sum + (recipe.averageRating ?? 0) * (recipe.ratingCount ?? 0), 0)
+    const count = feedRecipes.reduce((sum, recipe) => sum + (recipe.ratingCount ?? 0), 0)
+    return count ? total / count : 3.5
+  }, [discoveryFeed, discoveryRecipes, friendsFeedRecipes])
+  const visibleDiscoveryRecipes = discoveryFeed === 'friends' ? friendsFeedRecipes : discoveryFeed === 'following' ? followingFeedRecipes : discoveryRecipes
 
   const sharedToken = window.location.pathname.match(/^\/shared\/([^/]+)\/?$/)?.[1]
   if (sharedToken) return <SharedRecipePage token={sharedToken} />
@@ -306,18 +742,24 @@ function App() {
   return (
     <div className="app-shell">
       <aside className="sidebar">
-        <a className="brand" href="#" aria-label="My personal Cookbook home">
+        <a className="brand" href="#" aria-label="Cook & Tell home">
           <span className="brand-mark"><ChefHat size={19} strokeWidth={1.8} /></span>
-          <span>My personal Cookbook</span>
+          <span>Cook &amp; Tell</span>
         </a>
         <div className="side-intro">
-          <span className="eyebrow">YOUR PERSONAL COOKBOOK</span>
+          <span className="eyebrow">YOUR RECIPE COMMUNITY</span>
           <p>A little inspiration for whatever’s in the fridge.</p>
         </div>
         <nav className="side-nav" aria-label="Recipe categories">
-          <span className="nav-label">LIBRARY</span>
-          <button className={`nav-item ${activeCategory === 'All recipes' ? 'active' : ''}`} onClick={() => setActiveCategory('All recipes')}>
-            <BookOpen size={17} /> <span>All recipes</span><span className="nav-count">{recipes.length}</span>
+          <span className="nav-label">COOK &amp; TELL</span>
+          <button className={`nav-item ${activeView === 'discover' ? 'active' : ''}`} onClick={() => setActiveView('discover')}>
+            <Compass size={17} /> <span>Discover</span>
+          </button>
+          <button className={`nav-item ${activeView === 'cookbook' ? 'active' : ''}`} onClick={() => { setActiveView('cookbook'); setActiveCategory('All recipes') }}>
+            <BookOpen size={17} /> <span>My recipes</span><span className="nav-count">{recipes.length}</span>
+          </button>
+          <button className={`nav-item ${activeView === 'saved' ? 'active' : ''}`} onClick={() => setActiveView('saved')}>
+            <Bookmark size={17} /> <span>Saved recipes</span><span className="nav-count">{savedRecipes.length}</span>
           </button>
           <button className={`nav-item ${isFriendsOpen ? 'active' : ''}`} onClick={() => setIsFriendsOpen(true)}>
             <Users size={17} /> <span>Find a friend</span>
@@ -380,8 +822,9 @@ function App() {
 
       <main className="main-content">
         <header className="topbar">
-          <div className="breadcrumbs"><span>My cookbook</span><ArrowRight size={13} /><strong>{activeCategory}</strong></div>
+          <div className="breadcrumbs"><span>Cook &amp; Tell</span><ArrowRight size={13} /><strong>{activeCategory}</strong></div>
           <div className="top-actions">
+            <NotificationsButton key={user.id} userId={user.id} onOpenRecipe={(recipe) => void openRecipe(recipe)} />
             <label className="search-box">
               <Search size={17} />
               <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search recipes…" aria-label="Search recipes" />
@@ -390,53 +833,123 @@ function App() {
           </div>
         </header>
 
-        <section className="page-heading">
+        {activeView === 'discover' ? (
+          <section className="page-heading">
+            <div>
+              <span className="eyebrow">A TABLE FULL OF INSPIRATION</span>
+              <h1>Discover recipes</h1>
+              <p>{discoveryFeed === 'following' ? 'Public recipes from cooks you follow.' : 'Fresh ideas shared by cooks in the community.'}</p>
+            </div>
+            <div className="recipe-total"><span>{discoveryRecipes.length.toString().padStart(2, '0')}</span><small>PUBLIC<br />RECIPES</small></div>
+          </section>
+        ) : <section className="page-heading">
           <div>
-            <span className="eyebrow">A COLLECTION MADE YOURS</span>
-            <h1>{activeCategory === 'All recipes' ? 'The recipe box' : activeCategory}</h1>
-            <p>{activeCategory === 'All recipes'
+            <span className="eyebrow">{activeView === 'saved' ? 'KEPT CLOSE FOR LATER' : 'A COLLECTION MADE YOURS'}</span>
+            <h1>{activeView === 'saved' ? 'Saved recipes' : activeCategory === 'All recipes' ? 'The recipe box' : activeCategory}</h1>
+            <p>{activeView === 'saved'
+              ? 'Recipes you saved from other cooks.'
+              : activeCategory === 'All recipes'
               ? 'The keepers, the weeknight wins, and the ones you can’t wait to make again.'
               : `A few good ideas for ${activeCategory.toLowerCase()}.`}
             </p>
           </div>
-          <div className="recipe-total"><span>{recipes.length.toString().padStart(2, '0')}</span><small>RECIPES<br />COLLECTED</small></div>
-        </section>
+          <div className="recipe-total"><span>{(activeView === 'saved' ? savedRecipes.length : recipes.length).toString().padStart(2, '0')}</span><small>RECIPES<br />COLLECTED</small></div>
+        </section>}
 
         {loadError && <div className="inline-alert" role="alert">{loadError}<button onClick={() => setLoadError('')} aria-label="Dismiss"><X size={15} /></button></div>}
         {notice && <div className="toast" role="status">{notice}<button onClick={() => setNotice('')} aria-label="Dismiss"><X size={15} /></button></div>}
 
-        <div className="collection-toolbar">
-          <div className="collection-label"><span className="green-indicator" /> {query ? 'SEARCH RESULTS' : 'YOUR COLLECTION'} <span className="toolbar-count">{filteredRecipes.length}</span></div>
-          <button className="sort-button" onClick={() => setIsAddOpen(true)}><ArrowDownToLine size={15} /> Import a recipe</button>
-        </div>
+        {activeView === 'discover' ? (
+          <div className="collection-toolbar discovery-toolbar">
+            <div className="collection-label"><span className="green-indicator" /> {discoveryFeed === 'friends' ? 'FRIENDS’ RECIPES' : discoveryFeed === 'following' ? 'FOLLOWING' : 'COMMUNITY RECIPES'} <span className="toolbar-count">{visibleDiscoveryRecipes.length}</span></div>
+            <div className="discovery-controls">
+              <div className="discovery-sort" role="group" aria-label="Recipe feed">
+                <button className={discoveryFeed === 'public' ? 'selected' : ''} onClick={() => setDiscoveryFeed('public')}>Everyone</button>
+                <button className={discoveryFeed === 'friends' ? 'selected' : ''} onClick={() => { setDiscoveryFeed('friends'); void loadFriendsFeed() }}>Friends</button>
+                <button className={discoveryFeed === 'following' ? 'selected' : ''} onClick={() => { setDiscoveryFeed('following'); void loadFollowingFeed() }}>Following</button>
+              </div>
+              <div className="discovery-sort" role="group" aria-label="Sort recipes">
+                <button className={discoverySort === 'new' ? 'selected' : ''} onClick={() => setDiscoverySort('new')}>Newest</button>
+                <button className={discoverySort === 'best' ? 'selected' : ''} onClick={() => setDiscoverySort('best')}>Best rated</button>
+              </div>
+            </div>
+          </div>
+        ) : (
+          <div className="collection-toolbar">
+            <div className="collection-label"><span className="green-indicator" /> {query ? 'SEARCH RESULTS' : activeView === 'saved' ? 'SAVED RECIPES' : 'YOUR COLLECTION'} <span className="toolbar-count">{activeView === 'saved' ? savedRecipes.length : filteredRecipes.length}</span></div>
+            {activeView !== 'saved' && <button className="sort-button" onClick={() => setIsAddOpen(true)}><ArrowDownToLine size={15} /> Import a recipe</button>}
+          </div>
+        )}
 
-        {recipesLoading ? (
+        {activeView === 'discover' && recentlyViewedRecipes.length > 0 && (
+          <section className="recent-section" aria-label="Recently viewed recipes">
+            <div className="recent-heading"><h2>Back for another look</h2><span>RECENTLY VIEWED</span></div>
+            <div className="recipe-grid recent-grid">
+              {recentlyViewedRecipes.slice(0, 3).map((recipe, index) => (
+                <RecipeCard key={recipe.id} recipe={recipe} index={index} onOpen={() => void openRecipe(recipe)} onRate={(rating) => void rateAnyRecipe(recipe, rating)} />
+              ))}
+            </div>
+          </section>
+        )}
+
+        {activeView !== 'discover' && recipesLoading ? (
           <div className="empty-state"><LoaderCircle className="spin" /><p>Gathering your recipes…</p></div>
-        ) : filteredRecipes.length ? (
+        ) : activeView === 'discover' ? (
+          visibleDiscoveryRecipes.length ? (
+            <div className="recipe-grid">
+              {[...visibleDiscoveryRecipes]
+                .sort((first, second) => discoverySort === 'new'
+                  ? second.created_at.localeCompare(first.created_at)
+                  : weightedRating(second, priorRating) - weightedRating(first, priorRating))
+                .map((recipe, index) => (
+                  <RecipeCard
+                    key={recipe.id}
+                    recipe={recipe}
+                    index={index}
+                    author={recipe.authorUsername ? `@${recipe.authorUsername}` : 'A Cook & Tell cook'}
+                    ratingCount={recipe.ratingCount ?? 0}
+                    averageRating={recipe.averageRating ?? null}
+                    saved={savedRecipeIds.has(recipe.id)}
+                    onSave={() => void toggleSavedRecipe(recipe)}
+                    onOpen={() => void openRecipe(recipe)}
+                    onRate={(rating) => void rateAnyRecipe(recipe, rating)}
+                  />
+                ))}
+            </div>
+          ) : <div className="empty-state"><div className="empty-icon"><Compass size={24} /></div><h2>{discoveryFeed === 'friends' ? 'No friend recipes to show' : discoveryFeed === 'following' ? 'No recipes from cooks you follow' : 'No public recipes yet'}</h2><p>{discoveryFeed === 'friends' ? 'Accepted friends can share recipes with you by setting them to Friends or Public.' : discoveryFeed === 'following' ? 'Follow a cook from Find a friend, and their public recipes will show up here.' : 'Recipes are private until their owners choose to share them publicly.'}</p></div>
+        ) : (activeView === 'saved' ? savedRecipes : filteredRecipes).length ? (
           <div className="recipe-grid">
-            {filteredRecipes.map((recipe, index) => (
+            {(activeView === 'saved' ? savedRecipes : filteredRecipes).map((recipe, index) => (
               <RecipeCard
                 key={recipe.id}
                 recipe={recipe}
                 index={index}
-                onOpen={() => setSelectedRecipe(recipe)}
-                onRate={(rating) => void setRecipeRating(recipe, recipe.rating === rating ? null : rating)}
+                author={recipe.user_id === user.id ? 'Your cookbook' : ('authorUsername' in recipe && recipe.authorUsername ? `@${recipe.authorUsername}` : undefined)}
+                ratingCount={'ratingCount' in recipe ? recipe.ratingCount : undefined}
+                averageRating={'averageRating' in recipe ? recipe.averageRating : undefined}
+                saved={activeView === 'saved'}
+                onSave={activeView === 'saved' ? () => void toggleSavedRecipe(recipe) : undefined}
+                onOpen={() => void openRecipe(recipe)}
+                onRate={(rating) => void (recipe.user_id === user.id
+                  ? setRecipeRating(recipe, recipe.rating === rating ? null : rating)
+                  : rateAnyRecipe(recipe, rating))}
               />
             ))}
           </div>
         ) : (
           <div className="empty-state">
             <div className="empty-icon"><Utensils size={24} /></div>
-            <h2>{query ? 'Nothing in the pantry yet' : 'A fresh page'}</h2>
-            <p>{query ? 'Try another search, or add a recipe to your collection.' : 'Save a recipe link or snap a photo to start your collection.'}</p>
-            <button className="primary-button" onClick={() => setIsAddOpen(true)}><Plus size={16} /> Add your first recipe</button>
+            <h2>{activeView === 'saved' ? 'No saved recipes yet' : query ? 'Nothing in the pantry yet' : 'A fresh page'}</h2>
+            <p>{activeView === 'saved' ? 'Visit Discover and save recipes you would like to cook.' : query ? 'Try another search, or add a recipe to your collection.' : 'Save a recipe link or snap a photo to start your collection.'}</p>
+            {activeView !== 'saved' && <button className="primary-button" onClick={() => setIsAddOpen(true)}><Plus size={16} /> Add your first recipe</button>}
           </div>
         )}
-        <footer className="page-footer"><span>Made for the love of good food.</span><span>My personal Cookbook</span></footer>
+        <footer className="page-footer"><span>Made for the love of good food.</span><span>Cook &amp; Tell</span></footer>
       </main>
 
       {isAddOpen && <AddRecipeModal user={user} categoryOptions={availableCategories} onClose={() => setIsAddOpen(false)} onSaved={(message) => { void loadRecipes(); if (message) setNotice(message) }} />}
       {isFriendsOpen && <FriendCookbookModal
+        userId={user.id}
         initialEmail={friendCookbookEmail}
         onClose={() => { setIsFriendsOpen(false); setFriendCookbookEmail('') }}
         onFriendAdded={(friend) => {
@@ -469,14 +982,16 @@ function App() {
         <RecipeDetail
           recipe={selectedRecipe}
           ownerId={user.id}
+          canEdit={selectedRecipe.user_id === user.id}
+          onRate={(rating) => void rateAnyRecipe(selectedRecipe, rating)}
           onClose={() => setSelectedRecipe(null)}
-          onRate={(rating) => void setRecipeRating(selectedRecipe, selectedRecipe.rating === rating ? null : rating)}
           onTagClick={(tag) => {
             setActiveCategory('All recipes')
             setQuery(tag)
             setSelectedRecipe(null)
           }}
           onEdit={() => {
+            if (selectedRecipe.user_id !== user.id) return
             setEditingRecipe(selectedRecipe)
             setSelectedRecipe(null)
           }}
@@ -490,7 +1005,7 @@ function SetupScreen() {
   return (
     <div className="setup-screen">
       <div className="setup-card">
-        <span className="brand"><span className="brand-mark"><ChefHat size={19} /></span><span>My personal Cookbook</span></span>
+        <span className="brand"><span className="brand-mark"><ChefHat size={19} /></span><span>Cook &amp; Tell</span></span>
         <span className="eyebrow">ONE QUICK SETUP</span>
         <h1>Your cookbook is almost ready.</h1>
         <p>Connect your Supabase project to enable accounts, cloud-saved recipes, and photo uploads.</p>
@@ -535,7 +1050,7 @@ function AuthScreen() {
   return (
     <div className="auth-screen">
       <div className="auth-left">
-        <a className="brand" href="#"><span className="brand-mark"><ChefHat size={19} /></span><span>My personal Cookbook</span></a>
+        <a className="brand" href="#"><span className="brand-mark"><ChefHat size={19} /></span><span>Cook &amp; Tell</span></a>
         <div className="auth-story">
           <span className="eyebrow">GOOD THINGS ARE MADE AT HOME</span>
           <h1>A place for all the recipes you <em>love.</em></h1>
@@ -560,11 +1075,119 @@ function AuthScreen() {
   )
 }
 
-function RecipeCard({ recipe, index, onOpen, onRate }: {
+function NotificationsButton({ userId, onOpenRecipe }: { userId: string; onOpenRecipe: (recipe: Recipe) => void }) {
+  const [notifications, setNotifications] = useState<CookbookNotification[]>([])
+  const [open, setOpen] = useState(false)
+  const [error, setError] = useState('')
+  const unreadCount = notifications.filter((notification) => !notification.read_at).length
+
+  const loadNotifications = useCallback(async () => {
+    if (!supabase) return
+    const { data, error: queryError } = await supabase
+      .from('cookbook_notifications')
+      .select('id, actor_id, event_type, recipe_id, created_at, read_at')
+      .eq('recipient_id', userId)
+      .order('created_at', { ascending: false })
+      .limit(30)
+    if (queryError) {
+      setError(`Could not load notifications: ${queryError.message}`)
+      return
+    }
+    const actorIds = [...new Set((data ?? []).flatMap((item) => item.actor_id ? [item.actor_id] : []))]
+    const { data: profiles, error: profileError } = actorIds.length
+      ? await supabase.from('cookbook_profiles').select('user_id, username').in('user_id', actorIds)
+      : { data: [], error: null }
+    if (profileError) {
+      setError(`Could not load notification authors: ${profileError.message}`)
+      return
+    }
+    const names = new Map((profiles ?? []).map((profile) => [profile.user_id, profile.username]))
+    setNotifications((data ?? []).map((item) => ({
+      ...item,
+      actorName: item.actor_id ? names.get(item.actor_id) || 'A cook' : 'A cook',
+    })))
+    setError('')
+  }, [userId])
+
+  useEffect(() => { void loadNotifications() }, [loadNotifications])
+
+  async function openNotification(notification: CookbookNotification) {
+    if (!supabase) return
+    setError('')
+    if (!notification.read_at) {
+      const readAt = new Date().toISOString()
+      const { error: updateError } = await supabase.from('cookbook_notifications').update({ read_at: readAt }).eq('id', notification.id)
+      if (updateError) {
+        setError(`Could not mark notification as read: ${updateError.message}`)
+        return
+      }
+      setNotifications((current) => current.map((item) => item.id === notification.id ? { ...item, read_at: readAt } : item))
+    }
+    if (notification.recipe_id) {
+      const { data, error: recipeError } = await supabase.from('recipes').select('*').eq('id', notification.recipe_id).maybeSingle()
+      if (recipeError) {
+        setError(`Could not open the recipe: ${recipeError.message}`)
+        return
+      }
+      if (!data) {
+        setError('This recipe is no longer available to you.')
+        return
+      }
+      let recipe = data as Recipe
+      if (recipe.image_path) {
+        const { data: image, error: imageError } = await supabase.storage.from('recipe-images').createSignedUrl(recipe.image_path, 3600)
+        if (imageError) {
+          setError(`Could not load the recipe image: ${imageError.message}`)
+          return
+        }
+        recipe = { ...recipe, imageUrl: image.signedUrl }
+      }
+      onOpenRecipe(recipe)
+      setOpen(false)
+    }
+  }
+
+  function notificationLabel(notification: CookbookNotification) {
+    const labels: Record<string, string> = {
+      friend_request: 'sent you a friend request',
+      friend_accepted: 'accepted your friend request',
+      follow: 'started following you',
+      comment: 'left a note on your recipe',
+      rating: 'rated your recipe',
+      save: 'saved your recipe',
+    }
+    return `${notification.actorName} ${labels[notification.event_type] ?? 'updated your cookbook'}`
+  }
+
+  return (
+    <div className="notification-wrap">
+      <button type="button" className="notification-button" aria-label={`Notifications${unreadCount ? `, ${unreadCount} unread` : ''}`} aria-expanded={open} onClick={() => { setOpen((value) => !value); if (!open) void loadNotifications() }}>
+        <Bell size={17} />{unreadCount > 0 && <span className="notification-count">{unreadCount > 9 ? '9+' : unreadCount}</span>}
+      </button>
+      {open && <section className="notification-popover" aria-label="Notifications">
+        <div className="notification-heading"><strong>Notifications</strong><button type="button" className="text-button" onClick={() => void loadNotifications()}>Refresh</button></div>
+        {error && <p className="notification-error" role="alert">{error}</p>}
+        {notifications.length ? <div className="notification-list">{notifications.map((notification) => (
+          <button key={notification.id} type="button" className={`notification-item ${notification.read_at ? '' : 'unread'}`} onClick={() => void openNotification(notification)}>
+            <span className="notification-dot" />
+            <span><strong>{notificationLabel(notification)}</strong><small>{new Date(notification.created_at).toLocaleString()}</small></span>
+          </button>
+        ))}</div> : <p className="notification-empty">You’re all caught up.</p>}
+      </section>}
+    </div>
+  )
+}
+
+function RecipeCard({ recipe, index, onOpen, onRate, author, ratingCount, averageRating, saved, onSave }: {
   recipe: Recipe
   index: number
   onOpen: () => void
   onRate: (rating: number) => void
+  author?: string
+  ratingCount?: number
+  averageRating?: number | null
+  saved?: boolean
+  onSave?: () => void
 }) {
   return (
     <article className="recipe-card" style={{ animationDelay: `${Math.min(index * 55, 330)}ms` }}>
@@ -577,12 +1200,16 @@ function RecipeCard({ recipe, index, onOpen, onRate }: {
         </div>
       </button>
       <RatingStars rating={recipe.rating} onRate={onRate} compact />
+      {averageRating !== undefined && averageRating !== null && <span className="card-average-rating">{averageRating.toFixed(1)} · {ratingCount ?? 0} {ratingCount === 1 ? 'rating' : 'ratings'}</span>}
       <button className="card-copy" onClick={onOpen}>
         <span className="card-title">{recipe.title}</span>
         <span className="card-description">{recipe.description || 'A new favorite for the table.'}</span>
+        {author && <span className="card-author">by {author}</span>}
         {(recipe.tags ?? []).length > 0 && <span className="recipe-tags">{recipe.tags.slice(0, 3).map((tag) => <span className="tag-chip" key={tag}>{tag}</span>)}</span>}
         <span className="card-meta"><Clock3 size={14} /> {minutesLabel(recipe.prep_time_minutes, recipe.cook_time_minutes)}{recipe.servings ? <><span className="meta-divider">·</span>{recipe.servings} servings</> : null}</span>
+        <span className="visibility-indicator">{recipe.visibility === 'public' ? 'Public' : recipe.visibility === 'friends' ? 'Friends' : 'Private'}</span>
       </button>
+      {onSave && <button className="secondary-button card-save" type="button" onClick={onSave}><Bookmark size={13} fill={saved ? 'currentColor' : 'none'} />{saved ? 'Saved' : 'Save recipe'}</button>}
     </article>
   )
 }
@@ -623,8 +1250,9 @@ function AddRecipeModal({ user, recipe, categoryOptions, onClose, onSaved }: {
   onSaved: (message?: string) => void
 }) {
   const [sourceType, setSourceType] = useState<'link' | 'photo'>('link')
+  const [visibility, setVisibility] = useState<RecipeVisibility>(recipe?.visibility ?? 'private')
   const [url, setUrl] = useState('')
-  const [imageFile, setImageFile] = useState<File | null>(null)
+  const [imageFiles, setImageFiles] = useState<File[]>([])
   const [recipePhotoFile, setRecipePhotoFile] = useState<File | null>(null)
   const [photoPreview, setPhotoPreview] = useState<string | null>(recipe?.imageUrl ?? null)
   const [draft, setDraft] = useState<RecipeDraft>(() => recipe ? {
@@ -664,14 +1292,19 @@ function AddRecipeModal({ user, recipe, categoryOptions, onClose, onSaved }: {
     setBusy(true)
     setError('')
     try {
-      let body: { url: string } | { imageDataUrl: string }
+      let body: { url: string } | { imageDataUrls: string[] }
       if (sourceType === 'link') {
         body = { url: url.trim() }
       } else {
-        if (!imageFile) throw new Error('Choose a photo of a recipe first.')
-        if (imageFile.size > 8 * 1024 * 1024) throw new Error('Choose an image smaller than 8 MB.')
-        const dataUrl = await compressImageForExtraction(imageFile)
-        body = { imageDataUrl: dataUrl }
+        if (!imageFiles.length) throw new Error('Choose at least one recipe page photo.')
+        if (imageFiles.length > 4) throw new Error('Choose up to 4 recipe page photos at a time.')
+        if (imageFiles.some((file) => file.size > 8 * 1024 * 1024)) throw new Error('Each photo must be smaller than 8 MB.')
+        if (imageFiles.reduce((total, file) => total + file.size, 0) > 20 * 1024 * 1024) throw new Error('Choose photos with a combined size under 20 MB.')
+        const imageDataUrls = await Promise.all(imageFiles.map(compressImageForExtraction))
+        if (imageDataUrls.reduce((total, image) => total + image.length, 0) > 5_500_000) {
+          throw new Error('The compressed photos are too large to send together. Try fewer or smaller pages.')
+        }
+        body = { imageDataUrls }
       }
       const { data, error: invokeError } = await supabase.functions.invoke('extract-recipe', { body })
       if (invokeError) throw new Error(invokeError.message)
@@ -721,6 +1354,7 @@ function AddRecipeModal({ user, recipe, categoryOptions, onClose, onSaved }: {
       }
       const recipeFields = {
         title: draft.title.trim(),
+        visibility,
         description: draft.description.trim(),
         ingredients: draft.ingredients.split('\n').map((line) => line.trim()).filter(Boolean),
         steps: draft.steps.split('\n').map((line) => line.trim()).filter(Boolean),
@@ -731,23 +1365,60 @@ function AddRecipeModal({ user, recipe, categoryOptions, onClose, onSaved }: {
         cook_time_minutes: draft.cook_time_minutes ? Number(draft.cook_time_minutes) : null,
         servings: draft.servings ? Number(draft.servings) : null,
       }
-      const { error: insertError } = recipe
+      const { data: savedRecipe, error: insertError } = recipe
         ? await supabase.from('recipes').update({
           ...recipeFields,
           ...(uploadedImagePath ? { image_path: uploadedImagePath } : {}),
-        }).eq('id', recipe.id).eq('user_id', user.id)
+        }).eq('id', recipe.id).eq('user_id', user.id).select('id').single()
         : await supabase.from('recipes').insert({
           ...recipeFields,
           user_id: user.id,
           source_url: sourceType === 'link' ? url.trim() : null,
           image_path: uploadedImagePath,
-        })
+        }).select('id').single()
       if (insertError) {
         if (uploadedImagePath) {
           const { error: cleanupError } = await supabase.storage.from('recipe-images').remove([uploadedImagePath])
           if (cleanupError) throw new Error(`Recipe save failed: ${insertError.message}. Uploaded image cleanup also failed: ${cleanupError.message}`)
         }
         throw new Error(`Recipe save failed: ${insertError.message}`)
+      }
+      if (!recipe && sourceType === 'photo' && imageFiles.length > 0) {
+        if (!savedRecipe || typeof savedRecipe.id !== 'string') throw new Error('Recipe saved, but its original photo pages could not be linked to the recipe.')
+        const savedId = savedRecipe.id
+        const sourceRows: { recipe_id: string; user_id: string; image_path: string; position: number }[] = []
+        const uploadedSourcePaths: string[] = []
+        try {
+          for (const [position, file] of imageFiles.entries()) {
+            const extension = file.name.split('.').pop()?.toLowerCase().replace(/[^a-z0-9]/g, '') || 'jpg'
+            const path = `${user.id}/${crypto.randomUUID()}.${extension}`
+            const { error: sourceUploadError } = await supabase.storage
+              .from('recipe-source-images')
+              .upload(path, file, { contentType: file.type, upsert: false })
+            if (sourceUploadError) throw new Error(sourceUploadError.message)
+            uploadedSourcePaths.push(path)
+            sourceRows.push({ recipe_id: savedId, user_id: user.id, image_path: path, position })
+          }
+          const { error: sourceInsertError } = await supabase.from('recipe_source_images').insert(sourceRows)
+          if (sourceInsertError) throw new Error(sourceInsertError.message)
+        } catch (cause) {
+          const cleanup = uploadedSourcePaths.length
+            ? await supabase.storage.from('recipe-source-images').remove(uploadedSourcePaths)
+            : { error: null }
+          const { error: rollbackError } = await supabase.from('recipes').delete().eq('id', savedId).eq('user_id', user.id)
+          let heroCleanupError: string | null = null
+          if (uploadedImagePath) {
+            const { error: removeHeroError } = await supabase.storage.from('recipe-images').remove([uploadedImagePath])
+            if (removeHeroError) heroCleanupError = removeHeroError.message
+          }
+          const detail = cause instanceof Error ? cause.message : 'Unknown error'
+          const cleanupErrors = [
+            cleanup.error ? `Source-page cleanup also failed: ${cleanup.error.message}` : '',
+            rollbackError ? `The recipe could not be rolled back: ${rollbackError.message}` : '',
+            heroCleanupError ? `Cover-photo cleanup also failed: ${heroCleanupError}` : '',
+          ].filter(Boolean)
+          throw new Error(`Could not save the original photo pages: ${detail}${cleanupErrors.length ? ` ${cleanupErrors.join(' ')}` : ''}`)
+        }
       }
       let notice: string | undefined
       if (uploadedImagePath && recipe?.image_path) {
@@ -764,10 +1435,25 @@ function AddRecipeModal({ user, recipe, categoryOptions, onClose, onSaved }: {
   }
 
   function choosePhoto(event: ChangeEvent<HTMLInputElement>) {
-    const file = event.target.files?.[0] ?? null
-    setImageFile(file)
-    setRecipePhotoFile(file)
-    if (file) setError('')
+    const files = Array.from(event.target.files ?? [])
+    if (files.length > 4) {
+      setError('Choose up to 4 recipe page photos.')
+      event.target.value = ''
+      return
+    }
+    if (files.some((file) => file.size > 8 * 1024 * 1024)) {
+      setError('Each photo must be smaller than 8 MB.')
+      event.target.value = ''
+      return
+    }
+    if (files.some((file) => !['image/jpeg', 'image/png', 'image/webp', 'image/gif'].includes(file.type))) {
+      setError('Choose JPG, PNG, WEBP, or GIF photos.')
+      event.target.value = ''
+      return
+    }
+    setImageFiles(files)
+    setRecipePhotoFile(files[0] ?? null)
+    if (files.length) setError('')
   }
 
   function chooseRecipePhoto(event: ChangeEvent<HTMLInputElement>) {
@@ -805,10 +1491,10 @@ function AddRecipeModal({ user, recipe, categoryOptions, onClose, onSaved }: {
                 <label className="field-label">Recipe page URL<input type="url" required value={url} onChange={(event) => setUrl(event.target.value)} placeholder="https://…" autoFocus /></label>
               ) : (
                 <label className="upload-box">
-                  <input type="file" accept="image/jpeg,image/png,image/webp,image/gif" onChange={choosePhoto} />
+                  <input type="file" accept="image/jpeg,image/png,image/webp,image/gif" multiple onChange={choosePhoto} />
                   <span className="upload-icon"><ImagePlus size={20} /></span>
-                  <strong>{imageFile ? imageFile.name : 'Choose a recipe photo'}</strong>
-                  <span>{imageFile ? `${(imageFile.size / 1024 / 1024).toFixed(1)} MB · Ready to read` : 'JPG, PNG, WEBP or GIF · Up to 8 MB'}</span>
+                  <strong>{imageFiles.length ? `${imageFiles.length} recipe page${imageFiles.length === 1 ? '' : 's'} selected` : 'Choose recipe page photos'}</strong>
+                  <span>{imageFiles.length ? `${(imageFiles.reduce((total, file) => total + file.size, 0) / 1024 / 1024).toFixed(1)} MB total · Up to 4 pages` : 'JPG, PNG, WEBP or GIF · Up to 4 pages, 8 MB each'}</span>
                 </label>
               )}
               {error && <div className="form-message" role="alert">{error}</div>}
@@ -824,6 +1510,18 @@ function AddRecipeModal({ user, recipe, categoryOptions, onClose, onSaved }: {
             <p className="modal-lede">{recipe ? 'Update the details and save your changes.' : 'We’ve gathered what we could. Edit anything before adding it to your cookbook.'}</p>
             <form className="recipe-edit-form" onSubmit={(event) => void saveRecipe(event)}>
               <label className="field-label">Recipe name<input required maxLength={160} value={draft.title} onChange={(event) => update('title', event.target.value)} /></label>
+              <label className="field-label">Who can see this recipe
+                <select value={visibility} onChange={(event) => {
+                  if (event.target.value === 'private' || event.target.value === 'friends' || event.target.value === 'public') {
+                    setVisibility(event.target.value)
+                  }
+                }}>
+                  <option value="private">Private — only me</option>
+                  <option value="friends">Friends — accepted friends</option>
+                  <option value="public">Public — anyone</option>
+                </select>
+              </label>
+              <p className="visibility-note">Imported recipes start private. You can change visibility any time.</p>
               <label className="field-label">Recipe picture
                 <span className="recipe-photo-picker">
                   {photoPreview && <img src={photoPreview} alt="Recipe photo preview" />}
@@ -864,7 +1562,7 @@ function AddRecipeModal({ user, recipe, categoryOptions, onClose, onSaved }: {
               <label className="field-label">Method <span className="label-hint">one step per line</span><textarea required rows={5} value={draft.steps} onChange={(event) => update('steps', event.target.value)} placeholder={'Preheat the oven…\nWhisk together…'} /></label>
               {error && <div className="form-message" role="alert">{error}</div>}
               <div className="review-actions">
-                <span className="privacy-note"><Check size={15} /> Only you can see this recipe.</span>
+                <span className="privacy-note"><Check size={15} /> {visibility === 'private' ? 'Only you can see this recipe.' : visibility === 'friends' ? 'Only accepted friends can see this recipe.' : 'Anyone can find this recipe in Discover.'}</span>
                 <button className="primary-button" disabled={busy}>{busy ? <LoaderCircle className="spin" size={17} /> : null}{busy ? 'Saving…' : recipe ? 'Save changes' : 'Add to my cookbook'}<ArrowRight size={16} /></button>
               </div>
             </form>
@@ -875,9 +1573,158 @@ function AddRecipeModal({ user, recipe, categoryOptions, onClose, onSaved }: {
   )
 }
 
-function RecipeDetail({ recipe, ownerId, onClose, onRate, onEdit, onTagClick }: {
+function RecipeComments({ recipe, userId, canModerate }: { recipe: Recipe; userId: string; canModerate: boolean }) {
+  const [comments, setComments] = useState<RecipeComment[]>([])
+  const [body, setBody] = useState('')
+  const [imageFile, setImageFile] = useState<File | null>(null)
+  const [editingId, setEditingId] = useState<string | null>(null)
+  const [editingBody, setEditingBody] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+
+  const loadComments = useCallback(async () => {
+    if (!supabase) return
+    const client = supabase
+    const { data, error: queryError } = await client
+      .from('recipe_comments')
+      .select('id, recipe_id, user_id, body, image_path, created_at')
+      .eq('recipe_id', recipe.id)
+      .order('created_at', { ascending: true })
+    if (queryError) {
+      setError(`Could not load comments: ${queryError.message}`)
+      return
+    }
+    const rows = data ?? []
+    const ids = [...new Set(rows.map((item) => item.user_id))]
+    const { data: profiles, error: profileError } = ids.length
+      ? await client.from('cookbook_profiles').select('user_id, username').in('user_id', ids)
+      : { data: [], error: null }
+    if (profileError) {
+      setError(`Could not load comment authors: ${profileError.message}`)
+      return
+    }
+    const names = new Map((profiles ?? []).map((profile) => [profile.user_id, profile.username]))
+    const nextComments = await Promise.all(rows.map(async (item) => {
+      let imageUrl: string | null = null
+      if (item.image_path) {
+        const { data: image, error: imageError } = await client.storage.from('comment-images').createSignedUrl(item.image_path, 3600)
+        if (imageError) {
+          setError(`Could not load a comment photo: ${imageError.message}`)
+        } else {
+          imageUrl = image.signedUrl
+        }
+      }
+      return {
+        ...item,
+        author: names.get(item.user_id) || 'Cook',
+        imageUrl,
+      }
+    }))
+    setComments(nextComments)
+  }, [recipe.id])
+
+  useEffect(() => { void loadComments() }, [loadComments])
+
+  async function addComment(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (!supabase) return
+    setBusy(true)
+    setError('')
+    let imagePath: string | null = null
+    try {
+      if (imageFile) {
+        if (imageFile.size > 5 * 1024 * 1024) throw new Error('Choose an image smaller than 5 MB.')
+        if (!['image/jpeg', 'image/png', 'image/webp'].includes(imageFile.type)) throw new Error('Choose a JPG, PNG, or WEBP image.')
+        const extension = imageFile.name.split('.').pop()?.toLowerCase().replace(/[^a-z0-9]/g, '') || 'jpg'
+        imagePath = `${userId}/${crypto.randomUUID()}.${extension}`
+        const { error: uploadError } = await supabase.storage.from('comment-images').upload(imagePath, imageFile, { contentType: imageFile.type, upsert: false })
+        if (uploadError) throw new Error(`Could not upload comment photo: ${uploadError.message}`)
+      }
+      const { error: insertError } = await supabase.from('recipe_comments').insert({
+        recipe_id: recipe.id,
+        user_id: userId,
+        body: body.trim(),
+        image_path: imagePath,
+      })
+      if (insertError) throw new Error(`Could not post comment: ${insertError.message}`)
+      setBody('')
+      setImageFile(null)
+      await loadComments()
+    } catch (cause) {
+      let message = cause instanceof Error ? cause.message : 'Could not post comment.'
+      if (imagePath && supabase) {
+        const { error: cleanupError } = await supabase.storage.from('comment-images').remove([imagePath])
+        if (cleanupError) message += ` The uploaded image could not be cleaned up: ${cleanupError.message}`
+      }
+      setError(message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function saveComment(comment: RecipeComment) {
+    if (!supabase) return
+    const text = editingBody.trim()
+    if (!text) {
+      setError('A comment cannot be empty.')
+      return
+    }
+    const { error: updateError } = await supabase.from('recipe_comments').update({ body: text, updated_at: new Date().toISOString() }).eq('id', comment.id)
+    if (updateError) {
+      setError(`Could not update comment: ${updateError.message}`)
+      return
+    }
+    setEditingId(null)
+    setEditingBody('')
+    await loadComments()
+  }
+
+  async function deleteComment(comment: RecipeComment) {
+    if (!supabase) return
+    if (comment.image_path) {
+      const { error: imageError } = await supabase.storage.from('comment-images').remove([comment.image_path])
+      if (imageError) {
+        setError(`Could not delete the comment photo: ${imageError.message}`)
+        return
+      }
+    }
+    const { error: deleteError } = await supabase.from('recipe_comments').delete().eq('id', comment.id)
+    if (deleteError) {
+      setError(`Could not delete comment: ${deleteError.message}`)
+      return
+    }
+    setComments((current) => current.filter((item) => item.id !== comment.id))
+  }
+
+  return (
+    <section className="recipe-comments">
+      <h3>Cook’s notes <span>{comments.length}</span></h3>
+      {error && <div className="form-message" role="alert">{error}</div>}
+      {comments.length > 0 ? <div className="comment-list">{comments.map((comment) => (
+        <article className="comment-item" key={comment.id}>
+          <div className="comment-heading"><strong>@{comment.author}</strong><time dateTime={comment.created_at}>{new Date(comment.created_at).toLocaleDateString()}</time></div>
+          {editingId === comment.id
+            ? <div className="comment-edit"><textarea value={editingBody} onChange={(event) => setEditingBody(event.target.value)} maxLength={2000} /><button type="button" className="secondary-button" onClick={() => void saveComment(comment)}>Save</button><button type="button" className="text-button" onClick={() => setEditingId(null)}>Cancel</button></div>
+            : <p>{comment.body}</p>}
+          {comment.imageUrl && <img className="comment-image" src={comment.imageUrl} alt="Photo attached to comment" />}
+          <div className="comment-actions">
+            {comment.user_id === userId && editingId !== comment.id && <button type="button" className="text-button" onClick={() => { setEditingId(comment.id); setEditingBody(comment.body) }}>Edit</button>}
+            {(comment.user_id === userId || canModerate) && <button type="button" className="text-button danger-text" onClick={() => void deleteComment(comment)}>Delete</button>}
+          </div>
+        </article>
+      ))}</div> : <p className="comments-empty">No notes yet. Share how it turned out.</p>}
+      <form className="comment-form" onSubmit={(event) => void addComment(event)}>
+        <textarea value={body} onChange={(event) => setBody(event.target.value)} placeholder="Leave a note about this recipe…" maxLength={2000} required aria-label="Comment" />
+        <div className="comment-form-actions"><label className="secondary-button comment-photo"><ImagePlus size={14} />{imageFile ? imageFile.name : 'Add a photo'}<input type="file" accept="image/jpeg,image/png,image/webp" onChange={(event) => setImageFile(event.target.files?.[0] ?? null)} /></label><button className="primary-button" disabled={busy || !body.trim()}>{busy ? <LoaderCircle size={15} className="spin" /> : null}Post note</button></div>
+      </form>
+    </section>
+  )
+}
+
+function RecipeDetail({ recipe, ownerId, canEdit, onClose, onRate, onEdit, onTagClick }: {
   recipe: Recipe
   ownerId: string
+  canEdit: boolean
   onClose: () => void
   onRate: (rating: number) => void
   onEdit: () => void
@@ -887,7 +1734,57 @@ function RecipeDetail({ recipe, ownerId, onClose, onRate, onEdit, onTagClick }: 
   const [translations, setTranslations] = useState<Partial<Record<'en' | 'de' | 'es', RecipeTranslation>>>({})
   const [translationLoading, setTranslationLoading] = useState(false)
   const [translationError, setTranslationError] = useState('')
+  const [preferredLanguage, setPreferredLanguage] = useState<'en' | 'de' | 'es'>('en')
+  const [sourceImages, setSourceImages] = useState<RecipeSourceImage[]>([])
+  const [sourceImageError, setSourceImageError] = useState('')
+  const visibility = recipe.visibility ?? 'private'
   const displayRecipe = language === 'original' ? recipe : translations[language] ?? recipe
+
+  useEffect(() => {
+    let current = true
+    const client = supabase
+    async function loadRecipeExtras() {
+      if (!client) return
+      const [{ data: pages, error: pagesError }, { data: savedTranslations, error: translationsError }, { data: preferences, error: preferenceError }] = await Promise.all([
+        client.from('recipe_source_images').select('id, image_path').eq('recipe_id', recipe.id).order('position'),
+        client.from('recipe_translations').select('language, translation').eq('recipe_id', recipe.id).eq('user_id', ownerId),
+        client.from('cookbook_preferences').select('preferred_language').eq('user_id', ownerId).maybeSingle(),
+      ])
+      if (!current) return
+      if (pagesError) setSourceImageError(`Could not load original recipe photos: ${pagesError.message}`)
+      else {
+        const signedPages = await Promise.all((pages ?? []).map(async (page) => {
+          const { data, error } = await client.storage.from('recipe-source-images').createSignedUrl(page.image_path, 3600)
+          if (error) {
+            setSourceImageError(`Could not load an original recipe photo: ${error.message}`)
+            return null
+          }
+          return { id: page.id, imageUrl: data.signedUrl }
+        }))
+        if (current) setSourceImages(signedPages.filter((page): page is RecipeSourceImage => page !== null))
+      }
+      if (translationsError) {
+        setTranslationError(`Could not load saved translations: ${translationsError.message}`)
+      } else {
+        const restored: Partial<Record<'en' | 'de' | 'es', RecipeTranslation>> = {}
+        for (const entry of savedTranslations ?? []) {
+          const entryLanguage: unknown = entry.language
+          const entryTranslation: unknown = entry.translation
+          if ((entryLanguage === 'en' || entryLanguage === 'de' || entryLanguage === 'es') && isRecipeTranslation(entryTranslation)) {
+            restored[entryLanguage] = entryTranslation
+          }
+        }
+        if (current) setTranslations(restored)
+      }
+      if (preferenceError) {
+        setTranslationError(`Could not load your language preference: ${preferenceError.message}`)
+      } else if (preferences?.preferred_language === 'en' || preferences?.preferred_language === 'de' || preferences?.preferred_language === 'es') {
+        setPreferredLanguage(preferences.preferred_language)
+      }
+    }
+    void loadRecipeExtras()
+    return () => { current = false }
+  }, [ownerId, recipe.id])
 
   async function changeLanguage(nextLanguage: 'original' | 'en' | 'de' | 'es') {
     setLanguage(nextLanguage)
@@ -898,6 +1795,24 @@ function RecipeDetail({ recipe, ownerId, onClose, onRate, onEdit, onTagClick }: 
       return
     }
     setTranslationLoading(true)
+    const { data: saved, error: savedError } = await supabase
+      .from('recipe_translations')
+      .select('translation')
+      .eq('recipe_id', recipe.id)
+      .eq('user_id', ownerId)
+      .eq('language', nextLanguage)
+      .maybeSingle()
+    if (savedError) {
+      setLanguage('original')
+      setTranslationLoading(false)
+      setTranslationError(`Could not load the saved translation: ${savedError.message}`)
+      return
+    }
+    if (saved && isRecipeTranslation(saved.translation)) {
+      setTranslations((current) => ({ ...current, [nextLanguage]: saved.translation }))
+      setTranslationLoading(false)
+      return
+    }
     const { data, error } = await supabase.functions.invoke('extract-recipe', {
       body: {
         action: 'translate',
@@ -918,22 +1833,20 @@ function RecipeDetail({ recipe, ownerId, onClose, onRate, onEdit, onTagClick }: 
       setTranslationError(`Could not translate this recipe: ${message}`)
       return
     }
-    const translation = data?.translation as RecipeTranslation | undefined
-    if (
-      !translation ||
-      typeof translation.title !== 'string' ||
-      typeof translation.description !== 'string' ||
-      typeof translation.category !== 'string' ||
-      !Array.isArray(translation.ingredients) ||
-      !Array.isArray(translation.steps) ||
-      !translation.ingredients.every((item: unknown) => typeof item === 'string') ||
-      !translation.steps.every((item: unknown) => typeof item === 'string')
-    ) {
+    const translation: unknown = data?.translation
+    if (!isRecipeTranslation(translation)) {
       setLanguage('original')
       setTranslationError('Could not translate this recipe: the translation response was incomplete.')
       return
     }
     setTranslations((current) => ({ ...current, [nextLanguage]: translation }))
+    const { error: saveError } = await supabase.from('recipe_translations').upsert({
+      recipe_id: recipe.id,
+      user_id: ownerId,
+      language: nextLanguage,
+      translation,
+    }, { onConflict: 'recipe_id,user_id,language' })
+    if (saveError) setTranslationError(`Translated successfully, but could not save this translation: ${saveError.message}`)
   }
 
   return (
@@ -945,9 +1858,12 @@ function RecipeDetail({ recipe, ownerId, onClose, onRate, onEdit, onTagClick }: 
           <span className="card-category">{displayRecipe.category}</span>
         </div>
         <div className="detail-content">
-          <div className="detail-title-row"><div><span className="eyebrow">FROM YOUR COLLECTION</span><h2 id="detail-title">{displayRecipe.title}</h2></div></div>
-          <RatingStars rating={recipe.rating} onRate={onRate} />
-          <ShareRecipeButton recipe={recipe} ownerId={ownerId} />
+          <div className="detail-title-row"><div><span className="eyebrow">{canEdit ? 'YOUR RECIPE' : 'COMMUNITY RECIPE'} · {visibility.toUpperCase()}</span><h2 id="detail-title">{displayRecipe.title}</h2>
+            {recipe.authorUsername && <span className="detail-author">by @{recipe.authorUsername}</span>}
+            {recipe.averageRating !== undefined && recipe.averageRating !== null && <span className="detail-rating-summary">{recipe.averageRating.toFixed(1)} average · {recipe.ratingCount ?? 0} {(recipe.ratingCount ?? 0) === 1 ? 'rating' : 'ratings'}</span>}
+          </div></div>
+          {canEdit ? <RatingStars rating={recipe.rating} onRate={onRate} /> : <RatingStars rating={recipe.rating} onRate={onRate} />}
+          {canEdit && <ShareRecipeButton recipe={recipe} ownerId={ownerId} />}
           <label className="language-picker">Recipe language
             <select
               value={language}
@@ -964,17 +1880,21 @@ function RecipeDetail({ recipe, ownerId, onClose, onRate, onEdit, onTagClick }: 
             </select>
             {translationLoading && <span className="language-status" role="status"><LoaderCircle size={13} className="spin" /> Translating…</span>}
           </label>
+          {language === 'original' && <button className="secondary-button preferred-translate" type="button" disabled={translationLoading} onClick={() => void changeLanguage(preferredLanguage)}>Translate to my preferred language</button>}
           {translationError && <div className="form-message" role="alert">{translationError}</div>}
           {displayRecipe.description && <p className="detail-description">{displayRecipe.description}</p>}
           <div className="detail-facts"><span><Clock3 size={16} /> {minutesLabel(recipe.prep_time_minutes, recipe.cook_time_minutes)}</span>{recipe.servings ? <span><Utensils size={16} /> Serves {recipe.servings}</span> : null}</div>
           {recipe.recommended_from && <p className="detail-recommendation"><strong>Recommended from:</strong> {recipe.recommended_from}</p>}
           {(recipe.tags ?? []).length > 0 && <div className="detail-tags" aria-label="Recipe tags">{recipe.tags.map((tag) => <button className="tag-chip" key={tag} onClick={() => onTagClick(tag)}>{tag}</button>)}</div>}
+          {sourceImageError && <div className="form-message" role="alert">{sourceImageError}</div>}
+          {sourceImages.length > 0 && <section className="source-pages"><h3>Original recipe pages</h3><div>{sourceImages.map((page, index) => <a key={page.id} href={page.imageUrl} target="_blank" rel="noreferrer"><img src={page.imageUrl} alt={`Original recipe page ${index + 1}`} /><span>Page {index + 1}</span></a>)}</div></section>}
           <div className="detail-columns">
             <section><h3>Ingredients <span>{displayRecipe.ingredients.length}</span></h3><ul className="ingredient-list">{displayRecipe.ingredients.map((item, index) => <li key={`${index}-${item}`}><span className="check-circle"><Check size={11} /></span>{item}</li>)}</ul></section>
             <section><h3>Method</h3><ol className="step-list">{displayRecipe.steps.map((step, index) => <li key={`${index}-${step}`}><span>{String(index + 1).padStart(2, '0')}</span><p>{step}</p></li>)}</ol></section>
           </div>
-          <button className="primary-button" onClick={onEdit}><Pencil size={15} /> Edit recipe</button>
+          {canEdit && <button className="primary-button" onClick={onEdit}><Pencil size={15} /> Edit recipe</button>}
           {recipe.source_url && <a className="source-link" href={recipe.source_url} target="_blank" rel="noreferrer">Visit original recipe <ArrowRight size={14} /></a>}
+          <RecipeComments recipe={recipe} userId={ownerId} canModerate={canEdit} />
         </div>
       </article>
     </div>
@@ -1122,11 +2042,11 @@ function SharedRecipePage({ token }: { token: string }) {
 
   return (
     <main className="shared-page">
-      <a className="shared-brand" href="/"><ChefHat size={19} /> My personal Cookbook</a>
+      <a className="shared-brand" href="/"><ChefHat size={19} /> Cook &amp; Tell</a>
       {loading
         ? <div className="empty-state"><LoaderCircle className="spin" /><p>Loading shared recipe…</p></div>
         : error
-          ? <div className="shared-error" role="alert"><h1>Recipe unavailable</h1><p>{error}</p><a href="/">Open My personal Cookbook</a></div>
+          ? <div className="shared-error" role="alert"><h1>Recipe unavailable</h1><p>{error}</p><a href="/">Open Cook &amp; Tell</a></div>
           : recipe && <article className="detail-modal shared-recipe">
             <div className={`detail-cover ${!recipe.imageUrl ? 'detail-art' : ''}`}>
               {recipe.imageUrl ? <img src={recipe.imageUrl} alt="" /> : <div className="detail-cover-placeholder"><Coffee size={46} strokeWidth={1} /><span>MADE WITH A LITTLE LOVE</span></div>}
@@ -1152,7 +2072,8 @@ function SharedRecipePage({ token }: { token: string }) {
   )
 }
 
-function FriendCookbookModal({ initialEmail, onClose, onAdded, onFriendAdded, onFriendRequestReceived }: {
+function FriendCookbookModal({ userId, initialEmail, onClose, onAdded, onFriendAdded, onFriendRequestReceived }: {
+  userId: string
   initialEmail: string
   onClose: () => void
   onAdded: (title: string) => void
@@ -1167,6 +2088,7 @@ function FriendCookbookModal({ initialEmail, onClose, onAdded, onFriendAdded, on
   const [searched, setSearched] = useState(false)
   const [busy, setBusy] = useState(false)
   const [friendBusy, setFriendBusy] = useState(false)
+  const [isFollowing, setIsFollowing] = useState(false)
   const [copyingId, setCopyingId] = useState<string | null>(null)
   const [copiedIds, setCopiedIds] = useState<Set<string>>(new Set())
   const [expandedId, setExpandedId] = useState<string | null>(null)
@@ -1179,6 +2101,7 @@ function FriendCookbookModal({ initialEmail, onClose, onAdded, onFriendAdded, on
     setRecipes([])
     setOwnerEmail('')
     setOwnerId('')
+    setIsFollowing(false)
     setFriendRequestStatus('none')
     setSearched(false)
     const identifier = searchEmail.trim().replace(/^@(?=[^@]*$)/, '')
@@ -1210,11 +2133,25 @@ function FriendCookbookModal({ initialEmail, onClose, onAdded, onFriendAdded, on
     }
     setOwnerEmail(data.email)
     setOwnerId(data.friendId)
+    if (data.friendId !== userId) {
+      const { data: follow, error: followError } = await supabase
+        .from('cookbook_follows')
+        .select('followed_id')
+        .eq('follower_id', userId)
+        .eq('followed_id', data.friendId)
+        .maybeSingle()
+      if (followError) {
+        setError(`Could not check follow status: ${followError.message}`)
+        setBusy(false)
+        return
+      }
+      setIsFollowing(Boolean(follow))
+    }
     setRecipes(data.recipes as Recipe[])
     setFriendRequestStatus(data.relationshipStatus)
     setSearched(true)
     setBusy(false)
-  }, [])
+  }, [userId])
 
   useEffect(() => {
     if (initialEmail) {
@@ -1254,6 +2191,21 @@ function FriendCookbookModal({ initialEmail, onClose, onAdded, onFriendAdded, on
     }
   }
 
+  async function toggleFollow() {
+    if (!supabase || !ownerId || ownerId === userId || friendBusy) return
+    setFriendBusy(true)
+    setError('')
+    const result = isFollowing
+      ? await supabase.from('cookbook_follows').delete().eq('follower_id', userId).eq('followed_id', ownerId)
+      : await supabase.from('cookbook_follows').insert({ follower_id: userId, followed_id: ownerId })
+    setFriendBusy(false)
+    if (result.error) {
+      setError(`Could not ${isFollowing ? 'unfollow' : 'follow'} this cook: ${result.error.message}`)
+      return
+    }
+    setIsFollowing(!isFollowing)
+  }
+
   async function addRecipe(recipe: Recipe) {
     if (!supabase) return
     setCopyingId(recipe.id)
@@ -1288,6 +2240,7 @@ function FriendCookbookModal({ initialEmail, onClose, onAdded, onFriendAdded, on
         </form>
         {error && <div className="form-message" role="alert">{error}</div>}
         {searched && ownerId && <div className="friend-request-action">
+          {ownerId !== userId && <button className="secondary-button" type="button" disabled={friendBusy} onClick={() => void toggleFollow()}>{friendBusy ? <LoaderCircle size={14} className="spin" /> : <Users size={14} />}{isFollowing ? 'Following' : 'Follow cook'}</button>}
           {friendRequestStatus === 'accepted'
             ? <span className="friend-status"><Check size={14} /> Friends</span>
             : friendRequestStatus === 'request_sent'
@@ -1358,6 +2311,7 @@ function SettingsModal({ user, avatarUrl, onAvatarChanged, onClose, onSignOut }:
 }) {
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
+  const [preferredLanguage, setPreferredLanguage] = useState<'en' | 'de' | 'es'>('en')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
@@ -1371,7 +2325,14 @@ function SettingsModal({ user, avatarUrl, onAvatarChanged, onClose, onSignOut }:
         setUsername(data.username)
       }
     })
-  }, [])
+    void supabase.from('cookbook_preferences').select('preferred_language').eq('user_id', user.id).maybeSingle().then(({ data, error: preferenceError }) => {
+      if (preferenceError) {
+        setError((current) => [current, `Could not load your language preference: ${preferenceError.message}`].filter(Boolean).join(' '))
+      } else if (data?.preferred_language === 'en' || data?.preferred_language === 'de' || data?.preferred_language === 'es') {
+        setPreferredLanguage(data.preferred_language)
+      }
+    })
+  }, [user.id])
 
   async function saveUsername(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -1393,6 +2354,25 @@ function SettingsModal({ user, avatarUrl, onAvatarChanged, onClose, onSignOut }:
     }
     setUsername(data.username)
     setNotice(`Your username is @${data.username}.`)
+  }
+
+  async function savePreferredLanguage(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (!supabase || busy) return
+    setBusy(true)
+    setError('')
+    setNotice('')
+    const { error: saveError } = await supabase.from('cookbook_preferences').upsert({
+      user_id: user.id,
+      preferred_language: preferredLanguage,
+      updated_at: new Date().toISOString(),
+    }, { onConflict: 'user_id' })
+    setBusy(false)
+    if (saveError) {
+      setError(`Could not save your preferred language: ${saveError.message}`)
+      return
+    }
+    setNotice('Your preferred language was saved. Recipe translations are kept for your account.')
   }
 
   async function changePassword(event: FormEvent<HTMLFormElement>) {
@@ -1514,6 +2494,15 @@ function SettingsModal({ user, avatarUrl, onAvatarChanged, onClose, onSignOut }:
           <p>Friends can find you by this unique username.</p>
           <label className="field-label">Your username<input type="text" required minLength={3} maxLength={24} pattern="[A-Za-z0-9_]{3,24}" autoComplete="off" autoCapitalize="none" value={username} onChange={(event) => setUsername(event.target.value)} placeholder="e.g. homecook42" /></label>
           <button className="secondary-button" disabled={busy}>{busy ? <LoaderCircle size={14} className="spin" /> : null}Save username</button>
+        </form>
+        <form className="settings-section settings-form" onSubmit={(event) => void savePreferredLanguage(event)}>
+          <h3>Preferred language</h3>
+          <p>Choose the language you most often want recipes translated into.</p>
+          <label className="field-label">Language<select value={preferredLanguage} onChange={(event) => {
+            const value = event.target.value
+            if (value === 'en' || value === 'de' || value === 'es') setPreferredLanguage(value)
+          }}><option value="en">English</option><option value="de">German</option><option value="es">Spanish</option></select></label>
+          <button className="secondary-button" disabled={busy}>{busy ? <LoaderCircle size={14} className="spin" /> : null}Save language</button>
         </form>
         <form className="settings-section settings-form" onSubmit={(event) => void changePassword(event)}>
           <h3>Password</h3>

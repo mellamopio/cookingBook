@@ -1,6 +1,8 @@
 export type Recipe = {
   id: string
+  user_id?: string
   title: string
+  visibility: 'private' | 'friends' | 'public'
   description: string
   ingredients: string[]
   steps: string[]
@@ -13,6 +15,9 @@ export type Recipe = {
   source_url: string | null
   image_path: string | null
   rating: number | null
+  averageRating?: number | null
+  ratingCount?: number
+  authorUsername?: string | null
   created_at: string
   imageUrl?: string | null
 }
