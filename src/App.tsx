@@ -1307,7 +1307,7 @@ function AddRecipeModal({ user, recipe, categoryOptions, onClose, onSaved }: {
         body = { imageDataUrls }
       }
       const { data, error: invokeError } = await supabase.functions.invoke('extract-recipe', { body })
-      if (invokeError) throw new Error(invokeError.message)
+      if (invokeError) throw new Error(await functionErrorMessage(invokeError))
       if (data?.error) throw new Error(data.error)
       const recipe = data?.recipe as ExtractedRecipe | undefined
       if (!recipe) throw new Error('No recipe was returned. Please try another source.')
