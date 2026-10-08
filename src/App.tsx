@@ -20,7 +20,6 @@ import {
   Pencil,
   Plus,
   Search,
-  Share2,
   Sparkles,
   Star,
   Utensils,
@@ -733,8 +732,6 @@ function App() {
   }, [discoveryFeed, discoveryRecipes, friendsFeedRecipes])
   const visibleDiscoveryRecipes = discoveryFeed === 'friends' ? friendsFeedRecipes : discoveryFeed === 'following' ? followingFeedRecipes : discoveryRecipes
 
-  const sharedToken = window.location.pathname.match(/^\/shared\/([^/]+)\/?$/)?.[1]
-  if (sharedToken) return <SharedRecipePage token={sharedToken} />
   if (!isSupabaseConfigured) return <SetupScreen />
   if (sessionLoading) return <div className="screen-loader"><LoaderCircle className="spin" /> Loading your kitchen…</div>
   if (!user) return <AuthScreen />
@@ -1863,7 +1860,6 @@ function RecipeDetail({ recipe, ownerId, canEdit, onClose, onRate, onEdit, onTag
             {recipe.averageRating !== undefined && recipe.averageRating !== null && <span className="detail-rating-summary">{recipe.averageRating.toFixed(1)} average · {recipe.ratingCount ?? 0} {(recipe.ratingCount ?? 0) === 1 ? 'rating' : 'ratings'}</span>}
           </div></div>
           {canEdit ? <RatingStars rating={recipe.rating} onRate={onRate} /> : <RatingStars rating={recipe.rating} onRate={onRate} />}
-          {canEdit && <ShareRecipeButton recipe={recipe} ownerId={ownerId} />}
           <label className="language-picker">Recipe language
             <select
               value={language}
@@ -1898,177 +1894,6 @@ function RecipeDetail({ recipe, ownerId, canEdit, onClose, onRate, onEdit, onTag
         </div>
       </article>
     </div>
-  )
-}
-
-function ShareRecipeButton({ recipe, ownerId }: { recipe: Recipe; ownerId: string }) {
-  const [isOpen, setIsOpen] = useState(false)
-  const [shareUrl, setShareUrl] = useState('')
-  const [busy, setBusy] = useState(false)
-  const [error, setError] = useState('')
-  const [notice, setNotice] = useState('')
-
-  async function loadOrCreateShareLink(create: boolean) {
-    if (!supabase) return
-    setBusy(true)
-    setError('')
-    setNotice('')
-    const { data: existing, error: lookupError } = await supabase
-      .from('recipe_shares')
-      .select('token')
-      .eq('recipe_id', recipe.id)
-      .maybeSingle()
-    if (lookupError) {
-      setError(`Could not check sharing status: ${lookupError.message}`)
-      setBusy(false)
-      return
-    }
-    if (existing) {
-      setShareUrl(new URL(`/shared/${existing.token}`, window.location.origin).toString())
-      setBusy(false)
-      return
-    }
-    if (!create) {
-      setBusy(false)
-      return
-    }
-    const { data, error: createError } = await supabase
-      .from('recipe_shares')
-      .insert({ recipe_id: recipe.id, owner_id: ownerId })
-      .select('token')
-      .single()
-    if (createError) {
-      setError(`Could not create a sharing link: ${createError.message}`)
-    } else {
-      setShareUrl(new URL(`/shared/${data.token}`, window.location.origin).toString())
-      setNotice('Anyone with this link can view the recipe.')
-    }
-    setBusy(false)
-  }
-
-  async function copyLink() {
-    try {
-      await navigator.clipboard.writeText(shareUrl)
-      setNotice('Link copied. Anyone with the link can view this recipe.')
-      setError('')
-    } catch (cause) {
-      setError(cause instanceof Error ? `Could not copy the link: ${cause.message}` : 'Could not copy the link.')
-    }
-  }
-
-  async function revokeLink() {
-    if (!supabase) return
-    setBusy(true)
-    const { error: deleteError } = await supabase.from('recipe_shares').delete().eq('recipe_id', recipe.id)
-    if (deleteError) {
-      setError(`Could not revoke the sharing link: ${deleteError.message}`)
-    } else {
-      setShareUrl('')
-      setNotice('Sharing link revoked.')
-      setError('')
-    }
-    setBusy(false)
-  }
-
-  return (
-    <section className="share-recipe">
-      <button className="secondary-button" type="button" onClick={() => {
-        const nextOpen = !isOpen
-        setIsOpen(nextOpen)
-        if (nextOpen) void loadOrCreateShareLink(false)
-      }}>
-        <Share2 size={15} /> Share recipe
-      </button>
-      {isOpen && (
-        <div className="share-panel">
-          <p>Recipes are private unless you share a link. Anyone with the link can view this recipe.</p>
-          {shareUrl
-            ? <label className="field-label">Share link<input readOnly value={shareUrl} onFocus={(event) => event.currentTarget.select()} /></label>
-            : <button className="primary-button" type="button" disabled={busy} onClick={() => void loadOrCreateShareLink(true)}>{busy ? 'Checking…' : 'Create share link'}</button>}
-          {shareUrl && <div className="share-actions">
-            <button className="primary-button" type="button" onClick={() => void copyLink()}>Copy link</button>
-            <button className="secondary-button" type="button" disabled={busy} onClick={() => void revokeLink()}>Revoke link</button>
-          </div>}
-          {busy && <span className="language-status" role="status"><LoaderCircle size={13} className="spin" /> Working…</span>}
-          {error && <div className="form-message" role="alert">{error}</div>}
-          {notice && <div className="share-notice" role="status">{notice}</div>}
-        </div>
-      )}
-    </section>
-  )
-}
-
-function SharedRecipePage({ token }: { token: string }) {
-  const [recipe, setRecipe] = useState<Recipe | null>(null)
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState('')
-
-  useEffect(() => {
-    let isCurrent = true
-    async function loadSharedRecipe() {
-      if (!supabase) {
-        setError('This shared recipe is unavailable because the app is not configured.')
-        setLoading(false)
-        return
-      }
-      const { data, error: invokeError } = await supabase.functions.invoke('share-recipe', { body: { token } })
-      if (!isCurrent) return
-      if (invokeError) {
-        let message = invokeError.message
-        if (invokeError.context instanceof Response) {
-          try {
-            const body: unknown = await invokeError.context.clone().json()
-            if (body && typeof body === 'object' && 'error' in body && typeof body.error === 'string') {
-              message = body.error
-            }
-          } catch {
-            message = `HTTP ${invokeError.context.status}: ${invokeError.message}`
-          }
-        }
-        setError(message)
-      } else {
-        const shared = data?.recipe as Recipe | undefined
-        if (!shared || typeof shared.title !== 'string' || !Array.isArray(shared.ingredients) || !Array.isArray(shared.steps)) {
-          setError('This recipe sharing link is invalid or has been revoked.')
-        } else {
-          setRecipe(shared)
-        }
-      }
-      setLoading(false)
-    }
-    void loadSharedRecipe()
-    return () => { isCurrent = false }
-  }, [token])
-
-  return (
-    <main className="shared-page">
-      <a className="shared-brand" href="/"><ChefHat size={19} /> Cook &amp; Tell</a>
-      {loading
-        ? <div className="empty-state"><LoaderCircle className="spin" /><p>Loading shared recipe…</p></div>
-        : error
-          ? <div className="shared-error" role="alert"><h1>Recipe unavailable</h1><p>{error}</p><a href="/">Open Cook &amp; Tell</a></div>
-          : recipe && <article className="detail-modal shared-recipe">
-            <div className={`detail-cover ${!recipe.imageUrl ? 'detail-art' : ''}`}>
-              {recipe.imageUrl ? <img src={recipe.imageUrl} alt="" /> : <div className="detail-cover-placeholder"><Coffee size={46} strokeWidth={1} /><span>MADE WITH A LITTLE LOVE</span></div>}
-              <span className="card-category">{recipe.category}</span>
-            </div>
-            <div className="detail-content">
-              <span className="eyebrow">SHARED WITH YOU</span>
-              <h1 className="shared-title">{recipe.title}</h1>
-              {recipe.rating && <div className="shared-rating" aria-label={`Rated ${recipe.rating} out of 5 stars`}>{'★'.repeat(recipe.rating)}{'☆'.repeat(5 - recipe.rating)}</div>}
-              {recipe.description && <p className="detail-description">{recipe.description}</p>}
-              <div className="detail-facts"><span><Clock3 size={16} /> {minutesLabel(recipe.prep_time_minutes, recipe.cook_time_minutes)}</span>{recipe.servings ? <span><Utensils size={16} /> Serves {recipe.servings}</span> : null}</div>
-              {recipe.recommended_from && <p className="detail-recommendation"><strong>Recommended from:</strong> {recipe.recommended_from}</p>}
-              {(recipe.tags ?? []).length > 0 && <div className="detail-tags">{recipe.tags.map((tag) => <span className="tag-chip" key={tag}>{tag}</span>)}</div>}
-              <div className="detail-columns">
-                <section><h2>Ingredients <span>{recipe.ingredients.length}</span></h2><ul className="ingredient-list">{recipe.ingredients.map((item, index) => <li key={`${index}-${item}`}><span className="check-circle"><Check size={11} /></span>{item}</li>)}</ul></section>
-                <section><h2>Method</h2><ol className="step-list">{recipe.steps.map((step, index) => <li key={`${index}-${step}`}><span>{String(index + 1).padStart(2, '0')}</span><p>{step}</p></li>)}</ol></section>
-              </div>
-              {recipe.source_url && <a className="source-link" href={recipe.source_url} target="_blank" rel="noreferrer">Visit original recipe <ArrowRight size={14} /></a>}
-              <p className="shared-footer">This is a read-only shared recipe. <a href="/">Open your cookbook</a></p>
-            </div>
-          </article>}
-    </main>
   )
 }
 
