@@ -214,6 +214,16 @@ Deno.serve(async (request) => {
     }
     email = friendUser.user.email
 
+    if (body.action === 'find_group_user') {
+      const { data: profile, error: profileError } = await admin
+        .from('cookbook_profiles')
+        .select('username')
+        .eq('user_id', friendId)
+        .maybeSingle()
+      if (profileError) throw new Error(`Could not load this account profile: ${profileError.message}`)
+      return jsonResponse({ user: { id: friendId, email, username: profile?.username ?? null } })
+    }
+
     if (body.action === 'add_friend') {
       const { data: existing, error: existingError } = await admin
         .from('cookbook_friendships')

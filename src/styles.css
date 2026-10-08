@@ -359,8 +359,6 @@ button.tag-chip:hover { border-color: #aab7a0; background: #e9ede2; }
 .step-list p { margin: 0; color: #555b51; font-size: 10px; line-height: 1.75; }
 .source-link { display: inline-flex; align-items: center; gap: 8px; margin-top: 22px; color: #536c4e; font-size: 10px; font-weight: 600; text-decoration: none; }
 .source-link:hover { text-decoration: underline; }
-.shared-error { width: min(100%, 520px); margin: auto; padding: 30px; border: 1px solid #e9e6dc; background: #fbfaf7; color: #777a71; font-size: 12px; line-height: 1.7; }
-.shared-error h1 { margin-top: 0; color: #30362f; font-family: var(--serif); font-size: 30px; font-weight: 500; }
 .friend-modal { position: relative; display: flex; width: min(100%, 680px); max-height: calc(100vh - 40px); flex-direction: column; padding: 34px 36px 30px; overflow: hidden; border: 1px solid #eeece4; border-radius: 4px; background: #fbfaf6; box-shadow: 0 24px 80px #1820162e; animation: modal-in .2s ease-out; }
 .friend-modal h2 { margin: 8px 0 6px; font-family: var(--serif); font-size: 30px; font-weight: 500; }
 .friend-search { display: flex; align-items: flex-end; gap: 12px; margin-top: 15px; }
@@ -390,6 +388,41 @@ button.tag-chip:hover { border-color: #aab7a0; background: #e9ede2; }
 .friend-empty { margin-top: 20px; padding: 20px; background: #f2f1eb; color: #777a71; font-size: 11px; text-align: center; }
 .friend-request-action { margin-top: 12px; }
 .friend-status { display: inline-flex; align-items: center; gap: 6px; min-height: 35px; color: #65745c; font-size: 10px; line-height: 1.5; }
+.groups-modal { position: relative; display: flex; width: min(100%, 900px); max-height: calc(100vh - 40px); flex-direction: column; padding: 34px 36px 30px; overflow: auto; border: 1px solid #eeece4; border-radius: 4px; background: #fbfaf6; box-shadow: 0 24px 80px #1820162e; animation: modal-in .2s ease-out; }
+.groups-modal h2 { margin: 8px 0 5px; font-family: var(--serif); font-size: 30px; font-weight: 500; }
+.group-create-form, .group-add-member { display: flex; align-items: flex-end; gap: 10px; margin-top: 14px; }
+.group-create-form .field-label, .group-add-member .field-label { flex: 1; margin: 0; }
+.group-create-form .primary-button, .group-add-member .secondary-button { flex: 0 0 auto; }
+.group-picker { display: flex; flex: 0 0 auto; gap: 7px; margin-top: 18px; padding-bottom: 12px; overflow-x: auto; border-bottom: 1px solid var(--line); }
+.group-picker button { min-height: 32px; padding: 0 12px; border: 1px solid #dcded3; border-radius: 4px; background: #fffefa; color: #697064; font-size: 10px; cursor: pointer; }
+.group-picker button.selected { border-color: #87977e; background: #e9ede4; color: #40523d; }
+.group-content { display: grid; min-height: 0; grid-template-columns: minmax(210px, .8fr) minmax(0, 1.8fr); gap: 22px; margin-top: 15px; }
+.group-members, .group-feed { min-width: 0; }
+.group-section-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; margin-bottom: 11px; }
+.group-section-heading h3 { margin: 0; color: #394237; font-family: var(--serif); font-size: 18px; font-weight: 500; }
+.group-section-heading > span { color: #85877f; font-size: 9px; }
+.group-member-list { display: flex; flex-direction: column; gap: 8px; }
+.group-member { display: flex; min-width: 0; align-items: center; gap: 8px; color: #596153; font-size: 10px; }
+.group-member > span:nth-child(2) { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.group-member small { color: #92948b; font-size: 8px; }
+.group-member .text-button { padding: 3px; }
+.group-add-member { align-items: stretch; flex-direction: column; padding-top: 13px; border-top: 1px solid var(--line); }
+.group-add-member .secondary-button { align-self: flex-start; }
+.group-share-form { display: flex; flex-direction: column; gap: 10px; padding: 13px; border: 1px solid #e7e7de; border-radius: 4px; background: #fffefa; }
+.group-share-form .field-label { margin: 0; }
+.group-share-form textarea { min-height: 66px; resize: vertical; }
+.group-share-form .primary-button { align-self: flex-start; }
+.group-share-form .username-hint { margin: -4px 0 0; }
+.group-post-list { margin-top: 12px; }
+.group-post { padding: 13px 0; border-top: 1px solid #e8e8df; }
+.group-post-byline { display: flex; align-items: center; justify-content: space-between; gap: 10px; color: #65705e; font-size: 9px; }
+.group-post-byline time { color: #92948b; font-size: 8px; }
+.group-post-recipe { display: flex; width: 100%; align-items: center; gap: 10px; margin-top: 9px; padding: 0; border: 0; background: transparent; color: inherit; text-align: left; cursor: pointer; }
+.group-post-recipe > img, .group-post-recipe > .friend-recipe-placeholder { display: grid; width: 55px; height: 47px; flex: 0 0 auto; place-items: center; border-radius: 3px; background: #e8e5dc; color: #75866c; object-fit: cover; }
+.group-post-recipe > span:nth-child(2) { display: flex; min-width: 0; flex: 1; flex-direction: column; gap: 4px; }
+.group-post-recipe strong { overflow: hidden; color: #30362f; font-family: var(--serif); font-size: 15px; font-weight: 500; text-overflow: ellipsis; white-space: nowrap; }
+.group-post-recipe small { color: #85877f; font-size: 9px; }
+.group-post > p { margin: 8px 0 0; color: #62675e; font-size: 10px; line-height: 1.6; white-space: pre-wrap; }
 .settings-modal { position: relative; display: flex; width: min(100%, 560px); max-height: calc(100vh - 40px); flex-direction: column; padding: 34px 36px 28px; overflow-y: auto; border: 1px solid #eeece4; border-radius: 4px; background: #fbfaf6; box-shadow: 0 24px 80px #1820162e; animation: modal-in .2s ease-out; }
 .settings-modal h2 { margin: 8px 0 2px; font-family: var(--serif); font-size: 30px; font-weight: 500; }
 .settings-modal > .modal-lede { margin: 0; color: #85877f; font-size: 10px; }
@@ -498,8 +531,11 @@ button.tag-chip:hover { border-color: #aab7a0; background: #e9ede2; }
   .detail-content { padding: 22px 20px 26px; }
   .detail-title-row h2 { font-size: 27px; }
   .detail-columns { grid-template-columns: 1fr; gap: 24px; }
-  .shared-title { font-size: 27px; }
   .friend-modal { max-height: calc(100vh - 24px); padding: 30px 20px 22px; }
+  .groups-modal { max-height: calc(100vh - 24px); padding: 30px 20px 22px; }
+  .group-content { grid-template-columns: 1fr; gap: 18px; }
+  .group-create-form { align-items: stretch; flex-direction: column; }
+  .group-create-form .primary-button { width: 100%; }
   .settings-modal { max-height: calc(100vh - 24px); padding: 30px 20px 22px; }
   .friend-search { align-items: stretch; flex-direction: column; gap: 8px; }
   .friend-search .primary-button, .friend-search .secondary-button { width: 100%; }

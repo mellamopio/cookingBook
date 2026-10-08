@@ -64,6 +64,31 @@ type CookbookFriend = {
   email: string
 }
 
+type CookbookGroup = {
+  id: string
+  name: string
+  owner_id: string
+  created_at: string
+}
+
+type CookbookGroupMember = {
+  group_id: string
+  user_id: string
+  role: 'owner' | 'member'
+  username: string | null
+}
+
+type CookbookGroupPost = {
+  id: string
+  group_id: string
+  recipe_id: string
+  user_id: string
+  comment: string
+  created_at: string
+  authorName: string
+  recipe: Recipe
+}
+
 type FriendRequest = {
   id: string
   email: string
@@ -183,10 +208,12 @@ function App() {
   const [query, setQuery] = useState('')
   const [isAddOpen, setIsAddOpen] = useState(false)
   const [isFriendsOpen, setIsFriendsOpen] = useState(false)
+  const [isGroupsOpen, setIsGroupsOpen] = useState(false)
   const [isSettingsOpen, setIsSettingsOpen] = useState(false)
   const [friendCookbookEmail, setFriendCookbookEmail] = useState('')
   const [avatarUrl, setAvatarUrl] = useState<string | null>(null)
   const [selectedRecipe, setSelectedRecipe] = useState<Recipe | null>(null)
+  const [selectedRecipeFromGroup, setSelectedRecipeFromGroup] = useState(false)
   const [editingRecipe, setEditingRecipe] = useState<Recipe | null>(null)
   const [notice, setNotice] = useState('')
   const [loadError, setLoadError] = useState('')
@@ -219,6 +246,7 @@ function App() {
     setAvatarUrl(null)
     setActiveCategory('All recipes')
     setSelectedRecipe(null)
+    setSelectedRecipeFromGroup(false)
     if (user) {
       void loadRecipes()
       void loadFriends()
@@ -416,7 +444,7 @@ function App() {
     setRecentlyViewedRecipes(withImages)
   }
 
-  async function openRecipe(recipe: Recipe) {
+  async function openRecipe(recipe: Recipe, fromGroup = false) {
     let openedRecipe = recipe
     if (!supabase || !user) return
     if (recipe.user_id !== user.id) {
@@ -432,6 +460,7 @@ function App() {
         openedRecipe = { ...recipe, rating: rating?.rating ?? null }
       }
     }
+    setSelectedRecipeFromGroup(fromGroup)
     setSelectedRecipe(openedRecipe)
     const { error } = await supabase
       .from('recipe_views')
@@ -761,6 +790,9 @@ function App() {
           <button className={`nav-item ${isFriendsOpen ? 'active' : ''}`} onClick={() => setIsFriendsOpen(true)}>
             <Users size={17} /> <span>Find a friend</span>
           </button>
+          <button className={`nav-item ${isGroupsOpen ? 'active' : ''}`} onClick={() => setIsGroupsOpen(true)}>
+            <Users size={17} /> <span>Friend groups</span>
+          </button>
           {friendRequests.length > 0 && <span className="nav-label friends-label">FRIEND REQUESTS</span>}
           {friendRequests.map((request) => (
             <div className="friend-request-row" key={request.requesterId}>
@@ -959,6 +991,15 @@ function App() {
           setNotice(`“${title}” was added to your cookbook.`)
         }}
       />}
+      {isGroupsOpen && <FriendGroupsModal
+        userId={user.id}
+        recipes={recipes}
+        onClose={() => setIsGroupsOpen(false)}
+        onOpenRecipe={(recipe) => {
+          setIsGroupsOpen(false)
+          void openRecipe(recipe, true)
+        }}
+      />}
       {isSettingsOpen && <SettingsModal
         user={user}
         avatarUrl={avatarUrl}
@@ -978,19 +1019,25 @@ function App() {
       {selectedRecipe && (
         <RecipeDetail
           recipe={selectedRecipe}
+          fromGroup={selectedRecipeFromGroup}
           ownerId={user.id}
           canEdit={selectedRecipe.user_id === user.id}
           onRate={(rating) => void rateAnyRecipe(selectedRecipe, rating)}
-          onClose={() => setSelectedRecipe(null)}
+          onClose={() => {
+            setSelectedRecipe(null)
+            setSelectedRecipeFromGroup(false)
+          }}
           onTagClick={(tag) => {
             setActiveCategory('All recipes')
             setQuery(tag)
             setSelectedRecipe(null)
+            setSelectedRecipeFromGroup(false)
           }}
           onEdit={() => {
             if (selectedRecipe.user_id !== user.id) return
             setEditingRecipe(selectedRecipe)
             setSelectedRecipe(null)
+            setSelectedRecipeFromGroup(false)
           }}
         />
       )}
@@ -1718,10 +1765,345 @@ function RecipeComments({ recipe, userId, canModerate }: { recipe: Recipe; userI
   )
 }
 
-function RecipeDetail({ recipe, ownerId, canEdit, onClose, onRate, onEdit, onTagClick }: {
+function FriendGroupsModal({ userId, recipes, onClose, onOpenRecipe }: {
+  userId: string
+  recipes: Recipe[]
+  onClose: () => void
+  onOpenRecipe: (recipe: Recipe) => void
+}) {
+  const [groups, setGroups] = useState<CookbookGroup[]>([])
+  const [members, setMembers] = useState<CookbookGroupMember[]>([])
+  const [posts, setPosts] = useState<CookbookGroupPost[]>([])
+  const [selectedGroupId, setSelectedGroupId] = useState('')
+  const [groupName, setGroupName] = useState('')
+  const [memberIdentifier, setMemberIdentifier] = useState('')
+  const [recipeId, setRecipeId] = useState('')
+  const [comment, setComment] = useState('')
+  const [loading, setLoading] = useState(true)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+  const [notice, setNotice] = useState('')
+
+  const loadGroups = useCallback(async (preferredId?: string) => {
+    if (!supabase) return
+    const { data: memberships, error: membershipsError } = await supabase
+      .from('cookbook_group_members')
+      .select('group_id')
+      .eq('user_id', userId)
+    if (membershipsError) {
+      setError(`Could not load your groups: ${membershipsError.message}`)
+      setLoading(false)
+      return
+    }
+    const groupIds = (memberships ?? []).map((membership) => membership.group_id)
+    if (!groupIds.length) {
+      setGroups([])
+      setSelectedGroupId('')
+      setLoading(false)
+      return
+    }
+    const { data, error: groupsError } = await supabase
+      .from('cookbook_groups')
+      .select('id, name, owner_id, created_at')
+      .in('id', groupIds)
+      .order('created_at', { ascending: false })
+    if (groupsError) {
+      setError(`Could not load your groups: ${groupsError.message}`)
+      setLoading(false)
+      return
+    }
+    const nextGroups = (data ?? []) as CookbookGroup[]
+    setGroups(nextGroups)
+    setSelectedGroupId((current) => {
+      const preferred = preferredId ?? current
+      return nextGroups.some((group) => group.id === preferred) ? preferred : nextGroups[0]?.id ?? ''
+    })
+    setLoading(false)
+  }, [userId])
+
+  useEffect(() => {
+    void loadGroups()
+  }, [loadGroups])
+
+  useEffect(() => {
+    let current = true
+    async function loadGroupActivity() {
+      const client = supabase
+      if (!client || !selectedGroupId) {
+        setMembers([])
+        setPosts([])
+        return
+      }
+      setError('')
+      const [{ data: memberRows, error: memberError }, { data: postRows, error: postError }] = await Promise.all([
+        client.from('cookbook_group_members').select('group_id, user_id, role').eq('group_id', selectedGroupId).order('added_at'),
+        client.from('cookbook_group_recipe_posts').select('id, group_id, recipe_id, user_id, comment, created_at').eq('group_id', selectedGroupId).order('created_at', { ascending: false }),
+      ])
+      if (!current) return
+      if (memberError) {
+        setError(`Could not load group members: ${memberError.message}`)
+        return
+      }
+      if (postError) {
+        setError(`Could not load group activity: ${postError.message}`)
+        return
+      }
+      const memberIds = (memberRows ?? []).map((member) => member.user_id)
+      const postAuthors = (postRows ?? []).map((post) => post.user_id)
+      const recipeIds = [...new Set((postRows ?? []).map((post) => post.recipe_id))]
+      const profileIds = [...new Set([...memberIds, ...postAuthors])]
+      const requests = await Promise.all([
+        profileIds.length
+          ? client.from('cookbook_profiles').select('user_id, username').in('user_id', profileIds)
+          : Promise.resolve({ data: [], error: null }),
+        recipeIds.length
+          ? client.from('recipes').select('*').in('id', recipeIds)
+          : Promise.resolve({ data: [], error: null }),
+      ])
+      if (!current) return
+      const [profilesResult, recipesResult] = requests
+      if (profilesResult.error) {
+        setError(`Could not load group member names: ${profilesResult.error.message}`)
+        return
+      }
+      if (recipesResult.error) {
+        setError(`Could not load group recipes: ${recipesResult.error.message}`)
+        return
+      }
+      const usernames = new Map((profilesResult.data ?? []).map((profile) => [profile.user_id, profile.username]))
+      const groupMembers = (memberRows ?? []).map((member) => ({
+        ...member,
+        role: member.role as CookbookGroupMember['role'],
+        username: usernames.get(member.user_id) ?? null,
+      }))
+      const recipeById = new Map((recipesResult.data ?? []).map((recipe) => [recipe.id, recipe as Recipe]))
+      const hydratedPosts = (await Promise.all((postRows ?? []).map(async (post) => {
+        const recipe = recipeById.get(post.recipe_id)
+        if (!recipe) return null
+        let imageUrl: string | null = recipe.imageUrl ?? null
+        if (recipe.image_path && !imageUrl) {
+          const { data, error: imageError } = await client.storage.from('recipe-images').createSignedUrl(recipe.image_path, 3600)
+          if (imageError) throw new Error(`Could not load a group recipe photo: ${imageError.message}`)
+          imageUrl = data.signedUrl
+        }
+        return {
+          ...post,
+          authorName: usernames.get(post.user_id) ? `@${usernames.get(post.user_id)}` : 'Group member',
+          recipe: { ...recipe, imageUrl },
+        } as CookbookGroupPost
+      }))).filter((post): post is CookbookGroupPost => post !== null)
+      if (current) {
+        setMembers(groupMembers)
+        setPosts(hydratedPosts)
+      }
+    }
+    void loadGroupActivity().catch((cause: unknown) => {
+      if (current) setError(cause instanceof Error ? cause.message : 'Could not load group activity.')
+    })
+    return () => { current = false }
+  }, [selectedGroupId])
+
+  async function createGroup(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (!supabase) return
+    const name = groupName.trim()
+    if (!name) {
+      setError('Enter a name for your group.')
+      return
+    }
+    setBusy(true)
+    setError('')
+    setNotice('')
+    const { data, error: createError } = await supabase
+      .from('cookbook_groups')
+      .insert({ name, owner_id: userId })
+      .select('id')
+      .single()
+    setBusy(false)
+    if (createError) {
+      setError(`Could not create this group: ${createError.message}`)
+      return
+    }
+    setGroupName('')
+    await loadGroups(data.id)
+  }
+
+  async function addMember(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (!supabase || !selectedGroupId) return
+    setBusy(true)
+    setError('')
+    setNotice('')
+    const { data, error: lookupError } = await supabase.functions.invoke('friend-cookbook', {
+      body: { action: 'find_group_user', identifier: memberIdentifier.trim() },
+    })
+    if (lookupError) {
+      setError(`Could not find this account: ${await functionErrorMessage(lookupError)}`)
+      setBusy(false)
+      return
+    }
+    if (typeof data?.user?.id !== 'string' || data.user.id === userId) {
+      setError(data?.user?.id === userId ? 'You are already in this group.' : 'The account lookup returned an invalid response.')
+      setBusy(false)
+      return
+    }
+    const { error: insertError } = await supabase.from('cookbook_group_members').insert({
+      group_id: selectedGroupId,
+      user_id: data.user.id,
+      role: 'member',
+    })
+    setBusy(false)
+    if (insertError) {
+      setError(insertError.code === '23505' ? 'That person is already in this group.' : `Could not add this group member: ${insertError.message}`)
+      return
+    }
+    setMemberIdentifier('')
+    const addedName = typeof data.user.username === 'string' ? `@${data.user.username}` : typeof data.user.email === 'string' ? data.user.email : 'This cook'
+    setError('')
+    setNotice(`${addedName} was added to the group.`)
+    setMembers((current) => [...current, { group_id: selectedGroupId, user_id: data.user.id, role: 'member', username: data.user.username }])
+  }
+
+  async function removeMember(member: CookbookGroupMember) {
+    if (!supabase || !selectedGroupId) return
+    setBusy(true)
+    setError('')
+    setNotice('')
+    const { error: removeError } = await supabase
+      .from('cookbook_group_members')
+      .delete()
+      .eq('group_id', selectedGroupId)
+      .eq('user_id', member.user_id)
+    setBusy(false)
+    if (removeError) {
+      setError(`Could not remove this group member: ${removeError.message}`)
+      return
+    }
+    setMembers((current) => current.filter((item) => item.user_id !== member.user_id))
+  }
+
+  async function shareRecipe(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (!supabase || !selectedGroupId) return
+    setBusy(true)
+    setError('')
+    setNotice('')
+    const { data: newPost, error: shareError } = await supabase.from('cookbook_group_recipe_posts').insert({
+      group_id: selectedGroupId,
+      recipe_id: recipeId,
+      user_id: userId,
+      comment: comment.trim(),
+    }).select('id, group_id, recipe_id, user_id, comment, created_at').single()
+    setBusy(false)
+    if (shareError) {
+      setError(`Could not share this recipe: ${shareError.message}`)
+      return
+    }
+    const sharedRecipe = ownRecipes.find((recipe) => recipe.id === recipeId)
+    setRecipeId('')
+    setComment('')
+    if (sharedRecipe) setPosts((current) => [{
+      ...newPost,
+      authorName: 'You',
+      recipe: sharedRecipe,
+    } as CookbookGroupPost, ...current])
+  }
+
+  async function removePost(post: CookbookGroupPost) {
+    if (!supabase) return
+    setBusy(true)
+    setError('')
+    setNotice('')
+    const { error: deleteError } = await supabase
+      .from('cookbook_group_recipe_posts')
+      .delete()
+      .eq('id', post.id)
+    setBusy(false)
+    if (deleteError) {
+      setError(`Could not remove this group share: ${deleteError.message}`)
+      return
+    }
+    setPosts((current) => current.filter((item) => item.id !== post.id))
+  }
+
+  const selectedGroup = groups.find((group) => group.id === selectedGroupId)
+  const ownRecipes = recipes.filter((recipe) => recipe.user_id === userId)
+
+  return (
+    <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget && !busy) onClose() }}>
+      <section className="groups-modal" role="dialog" aria-modal="true" aria-labelledby="groups-title">
+        <button className="modal-close" onClick={onClose} aria-label="Close"><X size={19} /></button>
+        <span className="eyebrow">COOK BETTER TOGETHER</span>
+        <h2 id="groups-title">Friend groups</h2>
+        <p className="modal-lede">Create a group, add any Cook &amp; Tell account, and share recipes with a note for everyone.</p>
+        <form className="group-create-form" onSubmit={(event) => void createGroup(event)}>
+          <label className="field-label">New group name<input value={groupName} onChange={(event) => setGroupName(event.target.value)} maxLength={60} placeholder="Sunday supper club" required /></label>
+          <button className="primary-button" disabled={busy}>{busy ? 'Working…' : <><Plus size={15} /> Create group</>}</button>
+        </form>
+        {groups.length > 0 && <div className="group-picker" role="tablist" aria-label="Your groups">
+          {groups.map((group) => <button key={group.id} type="button" role="tab" aria-selected={selectedGroupId === group.id} className={selectedGroupId === group.id ? 'selected' : ''} onClick={() => setSelectedGroupId(group.id)}>{group.name}</button>)}
+        </div>}
+        {error && <div className="form-message" role="alert">{error}</div>}
+        {notice && <div className="settings-notice" role="status">{notice}</div>}
+        {loading
+          ? <div className="empty-state"><LoaderCircle className="spin" /><p>Loading your groups…</p></div>
+          : !selectedGroup
+            ? <div className="friend-empty">No groups yet. Create one to start sharing recipes with a group.</div>
+            : <div className="group-content">
+              <section className="group-members">
+                <div className="group-section-heading"><h3>{selectedGroup.name}</h3><span>{members.length} {members.length === 1 ? 'member' : 'members'}</span></div>
+                <div className="group-member-list">{members.map((member) => <div className="group-member" key={member.user_id}>
+                  <span className="friend-avatar">{(member.username?.[0] ?? 'C').toUpperCase()}</span>
+                  <span>{member.username ? `@${member.username}` : 'Cook'}{member.user_id === userId ? ' · you' : ''}</span>
+                  {member.role === 'owner' && <small>Owner</small>}
+                  {selectedGroup.owner_id === userId && member.user_id !== userId && <button type="button" className="text-button danger-text" disabled={busy} onClick={() => void removeMember(member)}>Remove</button>}
+                  {selectedGroup.owner_id !== userId && member.user_id === userId && <button type="button" className="text-button danger-text" disabled={busy} onClick={() => void removeMember(member)}>Leave</button>}
+                </div>)}</div>
+                {selectedGroup.owner_id === userId && <form className="group-add-member" onSubmit={(event) => void addMember(event)}>
+                  <label className="field-label">Add a Cook &amp; Tell user<input value={memberIdentifier} onChange={(event) => setMemberIdentifier(event.target.value)} autoComplete="off" autoCapitalize="none" placeholder="@username or email" required /></label>
+                  <button className="secondary-button" disabled={busy}>{busy ? 'Adding…' : 'Add member'}</button>
+                </form>}
+              </section>
+              <section className="group-feed">
+                <div className="group-section-heading"><h3>Group activity</h3><span>{posts.length} shared {posts.length === 1 ? 'recipe' : 'recipes'}</span></div>
+                <form className="group-share-form" onSubmit={(event) => void shareRecipe(event)}>
+                  <label className="field-label">Share one of your recipes
+                    <select value={recipeId} onChange={(event) => setRecipeId(event.target.value)} required>
+                      <option value="">Choose a recipe…</option>
+                      {ownRecipes.map((recipe) => <option key={recipe.id} value={recipe.id}>{recipe.title}</option>)}
+                    </select>
+                  </label>
+                  <label className="field-label">Add a note<textarea value={comment} onChange={(event) => setComment(event.target.value)} placeholder="What do you think about this? I tried it and it was delicious!" maxLength={1000} required /></label>
+                  <button className="primary-button" disabled={busy || !ownRecipes.length}>{busy ? 'Sharing…' : 'Share with group'}</button>
+                  {!ownRecipes.length && <p className="username-hint">Add a recipe to your cookbook before sharing it here.</p>}
+                </form>
+                {posts.length
+                  ? <div className="group-post-list">{posts.map((post) => <article className="group-post" key={post.id}>
+                    <div className="group-post-byline"><strong>{post.authorName}</strong><time dateTime={post.created_at}>{new Date(post.created_at).toLocaleString()}</time>
+                      {(post.user_id === userId || selectedGroup.owner_id === userId) && <button className="text-button danger-text" type="button" disabled={busy} onClick={() => void removePost(post)}>Remove share</button>}
+                    </div>
+                    <button type="button" className="group-post-recipe" onClick={() => onOpenRecipe(post.recipe)}>
+                      {post.recipe.imageUrl
+                        ? <img src={post.recipe.imageUrl} alt="" />
+                        : <span className="friend-recipe-placeholder"><Utensils size={18} /></span>}
+                      <span><strong>{post.recipe.title}</strong><small>{post.recipe.category}</small></span>
+                      <ArrowRight size={15} />
+                    </button>
+                    <p>{post.comment}</p>
+                  </article>)}</div>
+                  : <div className="friend-empty">No recipes shared in this group yet. Share the first one with a note.</div>}
+              </section>
+            </div>}
+      </section>
+    </div>
+  )
+}
+
+function RecipeDetail({ recipe, ownerId, canEdit, fromGroup, onClose, onRate, onEdit, onTagClick }: {
   recipe: Recipe
   ownerId: string
   canEdit: boolean
+  fromGroup: boolean
   onClose: () => void
   onRate: (rating: number) => void
   onEdit: () => void
@@ -1855,7 +2237,7 @@ function RecipeDetail({ recipe, ownerId, canEdit, onClose, onRate, onEdit, onTag
           <span className="card-category">{displayRecipe.category}</span>
         </div>
         <div className="detail-content">
-          <div className="detail-title-row"><div><span className="eyebrow">{canEdit ? 'YOUR RECIPE' : 'COMMUNITY RECIPE'} · {visibility.toUpperCase()}</span><h2 id="detail-title">{displayRecipe.title}</h2>
+          <div className="detail-title-row"><div><span className="eyebrow">{fromGroup && !canEdit ? 'GROUP SHARE' : canEdit ? 'YOUR RECIPE' : 'COMMUNITY RECIPE'} · {visibility.toUpperCase()}</span><h2 id="detail-title">{displayRecipe.title}</h2>
             {recipe.authorUsername && <span className="detail-author">by @{recipe.authorUsername}</span>}
             {recipe.averageRating !== undefined && recipe.averageRating !== null && <span className="detail-rating-summary">{recipe.averageRating.toFixed(1)} average · {recipe.ratingCount ?? 0} {(recipe.ratingCount ?? 0) === 1 ? 'rating' : 'ratings'}</span>}
           </div></div>
